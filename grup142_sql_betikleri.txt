@@ -1,0 +1,326 @@
+DROP TABLE IF EXISTS CalisanMaasLoglari CASCADE;
+DROP TABLE IF EXISTS MaasGecmisi CASCADE;
+DROP TABLE IF EXISTS Performanslar CASCADE;
+DROP TABLE IF EXISTS Izinler CASCADE;
+DROP TABLE IF EXISTS Calisanlar CASCADE;
+DROP TABLE IF EXISTS Departmanlar CASCADE;
+
+DROP PROCEDURE IF EXISTS sp_MaasHesaplaVeEkle(INT, INT, INT, CHAR);
+DROP PROCEDURE IF EXISTS sp_MaasHesaplaVeEkle(INT, CHAR(7));
+DROP PROCEDURE IF EXISTS sp_IzinOnayla(INT, VARCHAR);
+DROP PROCEDURE IF EXISTS sp_CalisanDepartmanDegistir(INT, INT);
+DROP FUNCTION IF EXISTS fn_IzinLimitKontrol();
+DROP FUNCTION IF EXISTS fn_MaasLoguYaz();
+
+CREATE TABLE Departmanlar (
+    DepartmanID SERIAL PRIMARY KEY,
+    DepartmanAdi VARCHAR(100) NOT NULL UNIQUE,
+    Lokasyon VARCHAR(100),
+    AktiflikDurumu BOOLEAN DEFAULT TRUE
+);
+
+CREATE TABLE Calisanlar (
+    CalisanID SERIAL PRIMARY KEY,
+    TC_No CHAR(11) NOT NULL UNIQUE,
+    Ad VARCHAR(100) NOT NULL,
+    IkinciAd VARCHAR(100),
+    Soyad VARCHAR(100) NOT NULL,
+    Eposta VARCHAR(100) NOT NULL UNIQUE,
+    Telefon CHAR(11),
+    IseGirisTarihi DATE DEFAULT CURRENT_DATE,
+    TabanMaas NUMERIC(10, 2) NOT NULL,
+    DepartmanID INT,
+    Aktiflik BOOLEAN DEFAULT TRUE,
+    CONSTRAINT fk_calisan_departman FOREIGN KEY (DepartmanID) REFERENCES Departmanlar(DepartmanID) ON DELETE SET NULL,
+    CONSTRAINT chk_taban_maas CHECK (TabanMaas > 0)
+);
+
+CREATE TABLE Izinler (
+    IzinID SERIAL PRIMARY KEY,
+    CalisanID INT NOT NULL,
+    IzinTuru VARCHAR(50) NOT NULL,
+    BaslangicTarihi DATE NOT NULL,
+    BitisTarihi DATE NOT NULL,
+    OnayDurumu VARCHAR(20) DEFAULT 'Beklemede',
+    CONSTRAINT fk_izin_calisan FOREIGN KEY (CalisanID) REFERENCES Calisanlar(CalisanID) ON DELETE CASCADE,
+    CONSTRAINT chk_izin_tarih CHECK (BitisTarihi >= BaslangicTarihi),
+    CONSTRAINT chk_onay_durum CHECK (OnayDurumu IN ('Beklemede', 'Onaylandı', 'Reddedildi'))
+);
+
+CREATE TABLE Performanslar (
+    PerformansID SERIAL PRIMARY KEY,
+    CalisanID INT NOT NULL,
+    DegerlendirmeDonemi VARCHAR(20) NOT NULL,
+    Skor INT NOT NULL,
+    Aciklama TEXT,
+    CONSTRAINT fk_performans_calisan FOREIGN KEY (CalisanID) REFERENCES Calisanlar(CalisanID) ON DELETE CASCADE,
+    CONSTRAINT chk_performans_skor CHECK (Skor BETWEEN 1 AND 5)
+);
+
+CREATE TABLE MaasGecmisi (
+    BordroID SERIAL PRIMARY KEY,
+    CalisanID INT NOT NULL,
+    MaasDonemi CHAR(7) NOT NULL,
+    NetMaas NUMERIC(10, 2) NOT NULL,
+    Bonus NUMERIC(10, 2) DEFAULT 0.00,
+    Kesinti NUMERIC(10, 2) DEFAULT 0.00,
+    IslemTarihi TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    Aciklama VARCHAR(255),
+    CONSTRAINT fk_maas_calisan FOREIGN KEY (CalisanID) REFERENCES Calisanlar(CalisanID) ON DELETE CASCADE,
+    CONSTRAINT chk_net_maas CHECK (NetMaas >= 0),
+    CONSTRAINT chk_bonus CHECK (Bonus >= 0),
+    CONSTRAINT chk_kesinti CHECK (Kesinti >= 0)
+);
+
+CREATE TABLE CalisanMaasLoglari (
+    LogID SERIAL PRIMARY KEY,
+    CalisanID INT NOT NULL,
+    EskiMaas NUMERIC(10, 2) NOT NULL,
+    YeniMaas NUMERIC(10, 2) NOT NULL,
+    DegisimTarihi TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT fk_maaslog_calisan FOREIGN KEY (CalisanID) REFERENCES Calisanlar(CalisanID) ON DELETE CASCADE
+);
+
+INSERT INTO Departmanlar (DepartmanAdi, Lokasyon) VALUES
+('Yazılım Geliştirme', 'A Blok Kat:3'),
+('İnsan Kaynakları', 'B Blok Kat:1'),
+('Muhasebe ve Finans', 'A Blok Kat:1'),
+('Pazarlama', 'C Blok Kat:2'),
+('Müşteri İlişkileri', 'B Blok Kat:2'),
+('Sistem ve Altyapı', 'A Blok Kat:4'),
+('Siber Güvenlik', 'A Blok Kat:4'),
+('Ar-Ge', 'D Blok Kat:1'),
+('Hukuk', 'C Blok Kat:4'),
+('Lojistik', 'D Blok Kat:2');
+
+INSERT INTO Calisanlar (TC_No, Ad, Soyad, Eposta, Telefon, TabanMaas, DepartmanID) VALUES
+('11111111111', 'Faruk', 'Bingöl', 'faruk@sirket.com', '05551112233', 45000.00, 1),
+('22222222222', 'Ahmet', 'Kaya', 'ahmet@sirket.com', '05552223344', 42000.00, 1),
+('33333333333', 'Arda', 'Başar', 'arda@sirket.com', '05553334455', 35000.00, 2),
+('44444444444', 'Samet', 'Diri', 'samet@sirket.com', '05554445566', 38000.00, 3),
+('55555555555', 'Fatma', 'Şahin', 'fatma@sirket.com', '05555556677', 34000.00, 4),
+('66666666666', 'Ali', 'Yıldız', 'ali@sirket.com', '05556667788', 43000.00, 6),
+('77777777777', 'Zeynep', 'Aslan', 'zeynep@sirket.com', '05557778899', 46000.00, 7),
+('88888888888', 'Murat', 'Aydın', 'murat@sirket.com', '05558889900', 48000.00, 8),
+('99999999999', 'Elif', 'Kılıç', 'elif@sirket.com', '05559990011', 37000.00, 5),
+('10101010101', 'Can', 'Öztürk', 'can@sirket.com', '05551010101', 39000.00, 9);
+
+INSERT INTO Izinler (CalisanID, IzinTuru, BaslangicTarihi, BitisTarihi, OnayDurumu) VALUES
+(1, 'Yıllık İzin', '2026-06-01', '2026-06-10', 'Onaylandı'),
+(2, 'Sağlık İzni', '2026-03-12', '2026-03-15', 'Onaylandı'),
+(3, 'Yıllık İzin', '2026-07-05', '2026-07-15', 'Beklemede'),
+(4, 'Ücretsiz İzin', '2026-04-01', '2026-04-05', 'Onaylandı'),
+(5, 'Mazeret İzni', '2026-02-10', '2026-02-11', 'Onaylandı'),
+(6, 'Yıllık İzin', '2026-08-20', '2026-08-30', 'Beklemede'),
+(7, 'Sağlık İzni', '2026-05-01', '2026-05-03', 'Onaylandı'),
+(8, 'Yıllık İzin', '2026-09-10', '2026-09-20', 'Reddedildi'),
+(9, 'Mazeret İzni', '2026-01-15', '2026-01-16', 'Onaylandı'),
+(10, 'Yıllık İzin', '2026-06-15', '2026-06-25', 'Beklemede');
+
+INSERT INTO Performanslar (CalisanID, DegerlendirmeDonemi, Skor, Aciklama) VALUES
+(1, '2026-Q1', 5, 'Proje teslimlerini zamanından önce tamamladı.'),
+(2, '2026-Q1', 4, 'Takım çalışmasına yatkın ve başarılı.'),
+(3, '2026-Q1', 3, 'Beklenen performansı tam olarak karşıladı.'),
+(4, '2026-Q1', 4, 'Mali raporlamalarda sıfır hata ile çalıştı.'),
+(5, '2026-Q1', 2, 'Hedeflerin gerisinde kaldı, geliştirilmeli.'),
+(6, '2026-Q1', 5, 'Sistem altyapı geçişini sorunsuz yönetti.'),
+(7, '2026-Q1', 5, 'Kritik bir siber saldırıyı engelledi.'),
+(8, '2026-Q1', 4, 'Yeni ürün patent başvurusunu tamamladı.'),
+(9, '2026-Q1', 3, 'Müşteri memnuniyet skorları ortalamada.'),
+(10, '2026-Q1', 4, 'Sözleşme süreçlerini başarıyla hukuki zemine oturttu.');
+
+INSERT INTO MaasGecmisi (CalisanID, MaasDonemi, NetMaas, Bonus, Kesinti, Aciklama) VALUES
+(1, '2026-04', 45000.00, 5000.00, 0.00, 'Nisan Maaşı + Performans Primi'),
+(2, '2026-04', 42000.00, 3000.00, 0.00, 'Nisan Maaşı + Prim'),
+(3, '2026-04', 35000.00, 0.00, 0.00, 'Nisan Maaşı'),
+(4, '2026-04', 38000.00, 2000.00, 0.00, 'Nisan Maaşı + Dönem Primi'),
+(5, '2026-04', 34000.00, 0.00, 1500.00, 'Nisan Maaşı - Devamsızlık Kesintisi'),
+(6, '2026-04', 43000.00, 4500.00, 0.00, 'Nisan Maaşı + Ek Mesai'),
+(7, '2026-04', 46000.00, 6000.00, 0.00, 'Nisan Maaşı + Başarı Primi'),
+(8, '2026-04', 48000.00, 4000.00, 0.00, 'Nisan Maaşı + Arge Primi'),
+(9, '2026-04', 37000.00, 0.00, 0.00, 'Nisan Maaşı'),
+(10, '2026-04', 39000.00, 1500.00, 0.00, 'Nisan Maaşı + Prim');
+
+CREATE INDEX idx_calisan_eposta ON Calisanlar(Eposta);
+CREATE INDEX idx_maas_donem ON MaasGecmisi(MaasDonemi);
+
+CREATE VIEW vw_CalisanGenelRapor AS
+SELECT 
+    c.CalisanID, 
+    c.Ad,
+    c.IkinciAd,
+    c.Soyad, 
+    c.Eposta, 
+    d.DepartmanAdi, 
+    c.TabanMaas
+FROM Calisanlar c
+LEFT JOIN Departmanlar d ON c.DepartmanID = d.DepartmanID;
+
+CREATE VIEW vw_YuksekPerformanslilar AS
+SELECT 
+    c.CalisanID, 
+    c.Ad, 
+    c.Soyad, 
+    p.DegerlendirmeDonemi, 
+    p.Skor, 
+    p.Aciklama
+FROM Performanslar p
+JOIN Calisanlar c ON p.CalisanID = c.CalisanID
+WHERE p.Skor >= 4;
+
+CREATE OR REPLACE PROCEDURE sp_MaasHesaplaVeEkle(
+    p_CalisanID INT,
+    p_Donem CHAR(7)
+)
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_TabanMaas NUMERIC(10,2);
+    v_Skor INT;
+    v_IzinGunSayisi INT := 0;
+    v_Bonus NUMERIC(10,2) := 0.00;
+    v_Kesinti NUMERIC(10,2) := 0.00;
+    v_NetMaas NUMERIC(10,2);
+    v_Yil INT;
+    v_Ay INT;
+BEGIN
+    v_Yil := SUBSTRING(p_Donem FROM 1 FOR 4)::INT;
+    v_Ay := SUBSTRING(p_Donem FROM 6 FOR 2)::INT;
+
+    SELECT TabanMaas INTO v_TabanMaas FROM Calisanlar WHERE CalisanID = p_CalisanID;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Hata: % ID ile eşleşen çalışan bulunamadı!', p_CalisanID;
+    END IF;
+
+    SELECT COALESCE(MAX(Skor), 3) INTO v_Skor 
+    FROM Performanslar 
+    WHERE CalisanID = p_CalisanID;
+
+    SELECT COALESCE(SUM(BitisTarihi - BaslangicTarihi), 0)
+    INTO v_IzinGunSayisi
+    FROM Izinler
+    WHERE CalisanID = p_CalisanID
+      AND OnayDurumu = 'Onaylandı'
+      AND EXTRACT(YEAR FROM BaslangicTarihi) = v_Yil
+      AND EXTRACT(MONTH FROM BaslangicTarihi) = v_Ay;
+
+    IF v_Skor = 5 THEN
+        v_Bonus := 5000.00;
+    ELSIF v_Skor = 4 THEN
+        v_Bonus := 3000.00;
+    END IF;
+
+    IF v_IzinGunSayisi > 3 THEN
+        v_Kesinti := (v_IzinGunSayisi - 3) * 1000.00;
+    END IF;
+
+    v_NetMaas := GREATEST(0.00, v_TabanMaas + v_Bonus - v_Kesinti);
+
+    INSERT INTO MaasGecmisi (CalisanID, MaasDonemi, NetMaas, Bonus, Kesinti, Aciklama)
+    VALUES (p_CalisanID, p_Donem, v_NetMaas, v_Bonus, v_Kesinti, 'Sistem Tarafından Otomatik Hesaplanan Ay Sonu Bordrosu');
+END;
+$$;
+
+CREATE OR REPLACE PROCEDURE sp_IzinOnayla(
+    p_IzinID INT,
+    p_Karar VARCHAR(20)
+)
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_CalisanID INT;
+    v_Baslangic DATE;
+    v_Bitis DATE;
+    v_MevcutDurum VARCHAR(20);
+BEGIN
+    SELECT CalisanID, BaslangicTarihi, BitisTarihi, OnayDurumu
+    INTO v_CalisanID, v_Baslangic, v_Bitis, v_MevcutDurum
+    FROM Izinler
+    WHERE IzinID = p_IzinID;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Hata: % ID ile eşleşen izin kaydı bulunamadı!', p_IzinID;
+    END IF;
+
+    IF v_MevcutDurum <> 'Beklemede' THEN
+        RAISE EXCEPTION 'Hata: Bu izin zaten "%" durumunda, tekrar işlem yapılamaz!', v_MevcutDurum;
+    END IF;
+
+    IF p_Karar NOT IN ('Onaylandı', 'Reddedildi') THEN
+        RAISE EXCEPTION 'Hata: Geçersiz karar değeri. "Onaylandı" veya "Reddedildi" olmalıdır.';
+    END IF;
+
+    UPDATE Izinler
+    SET OnayDurumu = p_Karar
+    WHERE IzinID = p_IzinID;
+
+    RAISE NOTICE 'Çalışan ID % için izin talebi "%" olarak güncellendi.', v_CalisanID, p_Karar;
+END;
+$$;
+
+CREATE OR REPLACE PROCEDURE sp_CalisanDepartmanDegistir(
+    p_CalisanID INT,
+    p_YeniDepartmanID INT
+)
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM Calisanlar WHERE CalisanID = p_CalisanID) THEN
+        RAISE EXCEPTION 'Hata: % ID ile eşleşen çalışan bulunamadı!', p_CalisanID;
+    END IF;
+
+    IF NOT EXISTS (SELECT 1 FROM Departmanlar WHERE DepartmanID = p_YeniDepartmanID) THEN
+        RAISE EXCEPTION 'Hata: % ID ile eşleşen departman bulunamadı!', p_YeniDepartmanID;
+    END IF;
+
+    UPDATE Calisanlar
+    SET DepartmanID = p_YeniDepartmanID
+    WHERE CalisanID = p_CalisanID;
+
+    RAISE NOTICE 'Çalışan ID % yeni departmana (ID: %) atandı.', p_CalisanID, p_YeniDepartmanID;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION fn_IzinLimitKontrol()
+RETURNS TRIGGER AS $$
+DECLARE
+    v_ToplamIzin INT := 0;
+    v_YeniIzinGunu INT;
+BEGIN
+    v_YeniIzinGunu := NEW.BitisTarihi - NEW.BaslangicTarihi;
+
+    IF NEW.OnayDurumu = 'Onaylandı' THEN
+        SELECT COALESCE(SUM(BitisTarihi - BaslangicTarihi), 0)
+        INTO v_ToplamIzin
+        FROM Izinler
+        WHERE CalisanID = NEW.CalisanID
+          AND OnayDurumu = 'Onaylandı'
+          AND EXTRACT(YEAR FROM BaslangicTarihi) = EXTRACT(YEAR FROM NEW.BaslangicTarihi)
+          AND (TG_OP = 'INSERT' OR IzinID <> NEW.IzinID);
+
+        IF (v_ToplamIzin + v_YeniIzinGunu) > 20 THEN
+            RAISE EXCEPTION 'İşlem İptal Edildi: Bir personel takvim yılı içerisinde toplam 20 günden fazla izin kullanamaz!';
+        END IF;
+    END IF;
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_IzinKontrol
+BEFORE INSERT OR UPDATE ON Izinler
+FOR EACH ROW
+EXECUTE FUNCTION fn_IzinLimitKontrol();
+
+CREATE OR REPLACE FUNCTION fn_MaasLoguYaz()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF OLD.TabanMaas IS DISTINCT FROM NEW.TabanMaas THEN
+        INSERT INTO CalisanMaasLoglari (CalisanID, EskiMaas, YeniMaas)
+        VALUES (NEW.CalisanID, OLD.TabanMaas, NEW.TabanMaas);
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_MaasLog_Guncelleme
+AFTER UPDATE ON Calisanlar
+FOR EACH ROW
+EXECUTE FUNCTION fn_MaasLoguYaz();
