@@ -13,6 +13,7 @@ const pool = new Pool({
   user: 'faruk',
   host: 'localhost',
   database: 'calisan_sistemi',
+  password: '123456',
   port: 5432,
 });
 
