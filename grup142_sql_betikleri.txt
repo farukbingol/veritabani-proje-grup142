@@ -324,3 +324,993 @@ CREATE TRIGGER trg_MaasLog_Guncelleme
 AFTER UPDATE ON Calisanlar
 FOR EACH ROW
 EXECUTE FUNCTION fn_MaasLoguYaz();
+
+DROP PROCEDURE IF EXISTS sp_MaasHesaplaVeEkle(integer, char(7));
+DROP PROCEDURE IF EXISTS sp_MaasHesaplaVeEkle(integer, text);
+DROP PROCEDURE IF EXISTS sp_MaasHesaplaVeEkle(text, text);
+DROP PROCEDURE IF EXISTS sp_MaasHesaplaVeEkle(numeric, text);
+
+CREATE OR REPLACE PROCEDURE sp_MaasHesaplaVeEkle(
+    p_CalisanID integer,
+    p_Donem text
+)
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_TabanMaas NUMERIC(10,2);
+    v_Skor INT;
+    v_IzinGunSayisi INT := 0;
+    v_Bonus NUMERIC(10,2) := 0.00;
+    v_Kesinti NUMERIC(10,2) := 0.00;
+    v_NetMaas NUMERIC(10,2);
+    v_Yil INT;
+    v_Ay INT;
+BEGIN
+    v_Yil := SUBSTRING(p_Donem FROM 1 FOR 4)::INT;
+    v_Ay := SUBSTRING(p_Donem FROM 6 FOR 2)::INT;
+
+    SELECT TabanMaas INTO v_TabanMaas FROM Calisanlar WHERE CalisanID = p_CalisanID;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Hata: % ID ile eşleşen çalışan bulunamadı!', p_CalisanID;
+    END IF;
+
+    SELECT COALESCE(MAX(Skor), 3) INTO v_Skor 
+    FROM Performanslar 
+    WHERE CalisanID = p_CalisanID;
+
+    SELECT COALESCE(SUM(BitisTarihi - BaslangicTarihi), 0)
+    INTO v_IzinGunSayisi
+    FROM Izinler
+    WHERE CalisanID = p_CalisanID
+      AND OnayDurumu = 'Onaylandı'
+      AND EXTRACT(YEAR FROM BaslangicTarihi) = v_Yil
+      AND EXTRACT(MONTH FROM BaslangicTarihi) = v_Ay;
+
+    IF v_Skor = 5 THEN
+        v_Bonus := 5000.00;
+    ELSIF v_Skor = 4 THEN
+        v_Bonus := 3000.00;
+    END IF;
+
+    IF v_IzinGunSayisi > 3 THEN
+        v_Kesinti := (v_IzinGunSayisi - 3) * 1000.00;
+    END IF;
+
+    v_NetMaas := GREATEST(0.00, v_TabanMaas + v_Bonus - v_Kesinti);
+
+    INSERT INTO MaasGecmisi (CalisanID, MaasDonemi, NetMaas, Bonus, Kesinti, Aciklama)
+    VALUES (p_CalisanID, p_Donem, v_NetMaas, v_Bonus, v_Kesinti, 'Sistem Tarafından Otomatik Hesaplanan Ay Sonu Bordrosu');
+END;
+$$;
+
+DROP PROCEDURE IF EXISTS sp_IzinOnayla(integer, varchar);
+DROP PROCEDURE IF EXISTS sp_IzinOnayla(integer, text);
+DROP PROCEDURE IF EXISTS sp_IzinOnayla(text, text);
+
+CREATE OR REPLACE PROCEDURE sp_IzinOnayla(
+    p_IzinID integer,
+    p_Karar text
+)
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_CalisanID INT;
+    v_Baslangic DATE;
+    v_Bitis DATE;
+    v_MevcutDurum VARCHAR(20);
+BEGIN
+    SELECT CalisanID, BaslangicTarihi, BitisTarihi, OnayDurumu
+    INTO v_CalisanID, v_Baslangic, v_Bitis, v_MevcutDurum
+    FROM Izinler
+    WHERE IzinID = p_IzinID;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Hata: % ID ile eşleşen izin kaydı bulunamadı!', p_IzinID;
+    END IF;
+
+    IF v_MevcutDurum <> 'Beklemede' THEN
+        RAISE EXCEPTION 'Hata: Bu izin zaten "%" durumunda, tekrar işlem yapılamaz!', v_MevcutDurum;
+    END IF;
+
+    IF p_Karar NOT IN ('Onaylandı', 'Reddedildi') THEN
+        RAISE EXCEPTION 'Hata: Geçersiz karar değeri. "Onaylandı" veya "Reddedildi" olmalıdır.';
+    END IF;
+
+    UPDATE Izinler
+    SET OnayDurumu = p_Karar
+    WHERE IzinID = p_IzinID;
+
+    RAISE NOTICE 'Çalışan ID % için izin talebi "%" olarak güncellendi.', v_CalisanID, p_Karar;
+END;
+$$;
+
+INSERT INTO Calisanlar (TC_No, Ad, Soyad, Eposta, Telefon, TabanMaas, DepartmanID) VALUES
+('12121212121', 'Mustafa', 'Yılmaz', 'mustafa@sirket.com', '05551234567', 41000.00, 1),
+('13131313131', 'Ayşe', 'Demir', 'ayse@sirket.com', '05552345678', 36000.00, 2),
+('14141414141', 'Mehmet', 'Çelik', 'mehmet@sirket.com', '05553456789', 39500.00, 3),
+('15151515151', 'Fatma', 'Özdemir', 'fatma.oz@sirket.com', '05554567890', 44000.00, 6),
+('16161616161', 'Hakan', 'Koç', 'hakan@sirket.com', '05555678901', 47500.00, 8)
+ON CONFLICT (TC_No) DO NOTHING;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM Performanslar WHERE DegerlendirmeDonemi = '2025-Q4') THEN
+        INSERT INTO Performanslar (CalisanID, DegerlendirmeDonemi, Skor, Aciklama) VALUES
+        (1, '2025-Q4', 4, 'Yıl sonu hedeflerine ulaştı.'),
+        (2, '2025-Q4', 3, 'Kararlı bir performans sergiledi.'),
+        (3, '2025-Q4', 4, 'İşe alım süreçlerini başarıyla tamamladı.'),
+        (4, '2025-Q4', 5, 'Bütçe planlamasında çok başarılı oldu.'),
+        (5, '2025-Q4', 3, 'Ortalama bir performans gösterdi.'),
+        (6, '2025-Q4', 4, 'Sunucu güncellemelerini sorunsuz yaptı.'),
+        (7, '2025-Q4', 4, 'Güvenlik taramalarını zamanında bitirdi.'),
+        (8, '2025-Q4', 5, 'Arge patent hedeflerini aştı.'),
+        (9, '2025-Q4', 3, 'Müşteri dönüşlerini zamanında yanıtladı.'),
+        (10, '2025-Q4', 4, 'Dava süreçlerinde şirketi başarıyla temsil etti.');
+    END IF;
+    
+    IF NOT EXISTS (SELECT 1 FROM Performanslar WHERE CalisanID = 11 AND DegerlendirmeDonemi = '2026-Q1') THEN
+        INSERT INTO Performanslar (CalisanID, DegerlendirmeDonemi, Skor, Aciklama) VALUES
+        (11, '2026-Q1', 4, 'Yazılım ekibine hızlı uyum sağladı.'),
+        (12, '2026-Q1', 3, 'Görevlerini zamanında yapıyor.'),
+        (13, '2026-Q1', 4, 'Mali analizlerde destek oldu.'),
+        (14, '2026-Q1', 5, 'Sistem güvenliği çalışmalarında aktif rol aldı.'),
+        (15, '2026-Q1', 4, 'Arge projelerinde yenilikçi fikirler sundu.');
+    END IF;
+
+    IF NOT EXISTS (SELECT 1 FROM Izinler WHERE BaslangicTarihi = '2026-05-10' AND CalisanID = 1) THEN
+        INSERT INTO Izinler (CalisanID, IzinTuru, BaslangicTarihi, BitisTarihi, OnayDurumu) VALUES
+        (1, 'Sağlık İzni', '2026-05-10', '2026-05-12', 'Onaylandı'),
+        (3, 'Yıllık İzin', '2026-05-01', '2026-05-05', 'Onaylandı'),
+        (5, 'Yıllık İzin', '2026-05-15', '2026-05-20', 'Onaylandı'),
+        (11, 'Mazeret İzni', '2026-05-22', '2026-05-23', 'Onaylandı'),
+        (12, 'Yıllık İzin', '2026-05-08', '2026-05-15', 'Onaylandı');
+    END IF;
+
+    IF NOT EXISTS (SELECT 1 FROM MaasGecmisi WHERE MaasDonemi = '2026-05') THEN
+        INSERT INTO MaasGecmisi (CalisanID, MaasDonemi, NetMaas, Bonus, Kesinti, Aciklama) VALUES
+        (1, '2026-05', 50000.00, 5000.00, 0.00, 'Mayıs Maaşı + Performans Primi'),
+        (2, '2026-05', 45000.00, 3000.00, 0.00, 'Mayıs Maaşı + Prim'),
+        (3, '2026-05', 35000.00, 0.00, 0.00, 'Mayıs Maaşı'),
+        (4, '2026-05', 41000.00, 3000.00, 0.00, 'Mayıs Maaşı + Prim'),
+        (5, '2026-05', 34000.00, 0.00, 0.00, 'Mayıs Maaşı'),
+        (6, '2026-05', 47500.00, 4500.00, 0.00, 'Mayıs Maaşı + Mesai'),
+        (7, '2026-05', 52000.00, 6000.00, 0.00, 'Mayıs Maaşı + Başarı Primi'),
+        (8, '2026-05', 52000.00, 4000.00, 0.00, 'Mayıs Maaşı + Arge Primi'),
+        (9, '2026-05', 37000.00, 0.00, 0.00, 'Mayıs Maaşı'),
+        (10, '2026-05', 40500.00, 1500.00, 0.00, 'Mayıs Maaşı + Prim'),
+        (11, '2026-05', 44000.00, 3000.00, 0.00, 'Mayıs Maaşı + Prim'),
+        (12, '2026-05', 36000.00, 0.00, 0.00, 'Mayıs Maaşı'),
+        (13, '2026-05', 39500.00, 0.00, 0.00, 'Mayıs Maaşı'),
+        (14, '2026-05', 49000.00, 5000.00, 0.00, 'Mayıs Maaşı + Performans Primi'),
+        (15, '2026-05', 50500.00, 3000.00, 0.00, 'Mayıs Maaşı + Prim');
+    END IF;
+
+    IF NOT EXISTS (SELECT 1 FROM MaasGecmisi WHERE MaasDonemi = '2026-03') THEN
+        INSERT INTO MaasGecmisi (CalisanID, MaasDonemi, NetMaas, Bonus, Kesinti, Aciklama) VALUES
+        (1, '2026-03', 50000.00, 5000.00, 0.00, 'Mart Maaşı + Prim'),
+        (2, '2026-03', 42000.00, 0.00, 0.00, 'Mart Maaşı'),
+        (3, '2026-03', 35000.00, 0.00, 0.00, 'Mart Maaşı'),
+        (4, '2026-03', 38000.00, 0.00, 0.00, 'Mart Maaşı'),
+        (5, '2026-03', 34000.00, 0.00, 0.00, 'Mart Maaşı'),
+        (6, '2026-03', 43000.00, 0.00, 0.00, 'Mart Maaşı'),
+        (7, '2026-03', 46000.00, 0.00, 0.00, 'Mart Maaşı'),
+        (8, '2026-03', 48000.00, 0.00, 0.00, 'Mart Maaşı'),
+        (9, '2026-03', 37000.00, 0.00, 0.00, 'Mart Maaşı'),
+        (10, '2026-03', 39000.00, 0.00, 0.00, 'Mart Maaşı');
+    END IF;
+
+    IF NOT EXISTS (SELECT 1 FROM MaasGecmisi WHERE MaasDonemi = '2026-02') THEN
+        INSERT INTO MaasGecmisi (CalisanID, MaasDonemi, NetMaas, Bonus, Kesinti, Aciklama) VALUES
+        (1, '2026-02', 45000.00, 0.00, 0.00, 'Şubat Maaşı'),
+        (2, '2026-02', 42000.00, 0.00, 0.00, 'Şubat Maaşı'),
+        (3, '2026-02', 35000.00, 0.00, 0.00, 'Şubat Maaşı'),
+        (4, '2026-02', 38000.00, 0.00, 0.00, 'Şubat Maaşı'),
+        (5, '2026-02', 34000.00, 0.00, 0.00, 'Şubat Maaşı'),
+        (6, '2026-02', 43000.00, 0.00, 0.00, 'Şubat Maaşı'),
+        (7, '2026-02', 46000.00, 0.00, 0.00, 'Şubat Maaşı'),
+        (8, '2026-02', 48000.00, 0.00, 0.00, 'Şubat Maaşı'),
+        (9, '2026-02', 37000.00, 0.00, 0.00, 'Şubat Maaşı'),
+        (10, '2026-02', 39000.00, 0.00, 0.00, 'Şubat Maaşı');
+    END IF;
+
+    IF NOT EXISTS (SELECT 1 FROM MaasGecmisi WHERE MaasDonemi = '2026-01') THEN
+        INSERT INTO MaasGecmisi (CalisanID, MaasDonemi, NetMaas, Bonus, Kesinti, Aciklama) VALUES
+        (1, '2026-01', 45000.00, 0.00, 0.00, 'Ocak Maaşı'),
+        (2, '2026-01', 42000.00, 0.00, 0.00, 'Ocak Maaşı'),
+        (3, '2026-01', 35000.00, 0.00, 0.00, 'Ocak Maaşı'),
+        (4, '2026-01', 38000.00, 0.00, 0.00, 'Ocak Maaşı'),
+        (5, '2026-01', 34000.00, 0.00, 0.00, 'Ocak Maaşı'),
+        (6, '2026-01', 43000.00, 0.00, 0.00, 'Ocak Maaşı'),
+        (7, '2026-01', 46000.00, 0.00, 0.00, 'Ocak Maaşı'),
+        (8, '2026-01', 48000.00, 0.00, 0.00, 'Ocak Maaşı'),
+        (9, '2026-01', 37000.00, 0.00, 0.00, 'Ocak Maaşı'),
+        (10, '2026-01', 39000.00, 0.00, 0.00, 'Ocak Maaşı');
+    END IF;
+END $$;
+
+DO $$
+BEGIN
+
+IF NOT EXISTS (SELECT 1 FROM Performanslar WHERE DegerlendirmeDonemi = '2020-Q1') THEN
+    INSERT INTO Performanslar (CalisanID, DegerlendirmeDonemi, Skor, Aciklama) VALUES
+    (1, '2020-Q1', 4, 'Çeyrek hedeflerini zamanında teslim etti.'),
+    (2, '2020-Q1', 3, 'Beklenen katkıyı ortalamanın üstünde gösterdi.'),
+    (3, '2020-Q1', 3, 'Rutin görevlerini eksiksiz yerine getirdi.'),
+    (4, '2020-Q1', 4, 'Bütçe analizlerinde hatasız performans sergiledi.'),
+    (5, '2020-Q1', 2, 'Bazı kampanya hedefleri eksik kaldı.'),
+    (6, '2020-Q1', 5, 'Kritik sunucu geçişini tek başına yönetti.'),
+    (7, '2020-Q1', 4, 'Güvenlik taramalarını plana uygun bitirdi.'),
+    (8, '2020-Q1', 5, 'Patent başvurularında rekor kırdı.'),
+    (9, '2020-Q1', 3, 'Müşteri çözüm süreleri hedef dahilinde kaldı.'),
+    (10, '2020-Q1', 3, 'Sözleşme süreçlerini standart çerçevede yürüttü.');
+END IF;
+
+IF NOT EXISTS (SELECT 1 FROM Performanslar WHERE DegerlendirmeDonemi = '2020-Q2') THEN
+    INSERT INTO Performanslar (CalisanID, DegerlendirmeDonemi, Skor, Aciklama) VALUES
+    (1, '2020-Q2', 5, 'Pandemi sürecinde uzaktan çalışmaya hızlı uyum sağladı.'),
+    (2, '2020-Q2', 4, 'Takımın koordinasyonunu üstlendi.'),
+    (3, '2020-Q2', 2, 'Uzaktan işe alım süreçlerinde gecikmeler yaşandı.'),
+    (4, '2020-Q2', 4, 'Nakit akışı raporlamasını yönetimle paylaştı.'),
+    (5, '2020-Q2', 3, 'Dijital pazarlama kanallarına geçişi tamamladı.'),
+    (6, '2020-Q2', 5, 'VPN altyapısını tüm şirkete hızla yaydı.'),
+    (7, '2020-Q2', 5, 'Uzaktan erişim güvenliğini sıfır ihlalle sürdürdü.'),
+    (8, '2020-Q2', 4, 'Ar-Ge süreçlerini uzaktan yönetmeye adapte etti.'),
+    (9, '2020-Q2', 3, 'Dijital müşteri kanallarına geçişi destekledi.'),
+    (10, '2020-Q2', 4, 'Pandemi dönemine özel hukuki risklerini raporladı.');
+END IF;
+
+IF NOT EXISTS (SELECT 1 FROM Performanslar WHERE DegerlendirmeDonemi = '2020-Q3') THEN
+    INSERT INTO Performanslar (CalisanID, DegerlendirmeDonemi, Skor, Aciklama) VALUES
+    (1, '2020-Q3', 4, 'Yazılım modülü teslimatlarını zamanında yaptı.'),
+    (2, '2020-Q3', 3, 'Kod kalite standartlarını korudu.'),
+    (3, '2020-Q3', 3, 'Yeni işe alım sayısını hedefin gerisinde tamamladı.'),
+    (4, '2020-Q3', 5, 'Maliyet optimizasyonuyla bütçeden tasarruf sağladı.'),
+    (5, '2020-Q3', 3, 'Kampanya yönetimini sürdürdü.'),
+    (6, '2020-Q3', 4, 'Altyapı kapasite planlamasını güncelledi.'),
+    (7, '2020-Q3', 4, 'Penetrasyon testlerini başarıyla tamamladı.'),
+    (8, '2020-Q3', 4, 'Yeni ürün prototipini tanıttı.'),
+    (9, '2020-Q3', 2, 'Müşteri şikayet sayısı hedeflerin üzerine çıktı.'),
+    (10, '2020-Q3', 3, 'Hukuki süreçleri takip etti.');
+END IF;
+
+IF NOT EXISTS (SELECT 1 FROM Performanslar WHERE DegerlendirmeDonemi = '2020-Q4') THEN
+    INSERT INTO Performanslar (CalisanID, DegerlendirmeDonemi, Skor, Aciklama) VALUES
+    (1, '2020-Q4', 5, 'Yıllık kilometre taşlarını aşarak tamamladı.'),
+    (2, '2020-Q4', 4, 'Yıl sonu sprint hedeflerine ulaştı.'),
+    (3, '2020-Q4', 3, 'İşe alım kotasını yıl sonunda tamamladı.'),
+    (4, '2020-Q4', 4, 'Yıl sonu kapanış raporlarını hatasız sundu.'),
+    (5, '2020-Q4', 2, 'Kampanya dönüşüm oranları beklentilerin altında kaldı.'),
+    (6, '2020-Q4', 5, 'Yedek sistem testlerini başarıyla sonuçlandırdı.'),
+    (7, '2020-Q4', 4, 'Yıl sonu güvenlik denetimini geçti.'),
+    (8, '2020-Q4', 5, 'İki yeni patent tescil ettirdi.'),
+    (9, '2020-Q4', 3, 'Müşteri memnuniyet oranı yüzde seksen üzerinde kaldı.'),
+    (10, '2020-Q4', 4, 'Yıllık sözleşme yenilemelerini eksiksiz tamamladı.');
+END IF;
+
+IF NOT EXISTS (SELECT 1 FROM Performanslar WHERE DegerlendirmeDonemi = '2021-Q1') THEN
+    INSERT INTO Performanslar (CalisanID, DegerlendirmeDonemi, Skor, Aciklama) VALUES
+    (1, '2021-Q1', 4, 'Yeni modülün ilk versiyonunu sürücü olarak çıkardı.'),
+    (2, '2021-Q1', 3, 'Teknik borç azaltma görevini tamamladı.'),
+    (3, '2021-Q1', 4, 'İşe alım süreçlerini optimize etti.'),
+    (4, '2021-Q1', 3, 'Mali tabloları düzenli tuttu.'),
+    (5, '2021-Q1', 3, 'Sosyal medya kampanyasını yönetti.'),
+    (6, '2021-Q1', 4, 'Sistem izleme altyapısını genişletti.'),
+    (7, '2021-Q1', 5, 'Fidye yazılımı saldırısını proaktif olarak engelledi.'),
+    (8, '2021-Q1', 4, 'Ar-Ge yol haritasını yönetime sundu.'),
+    (9, '2021-Q1', 3, 'Müşteri yanıt sürelerini kısalttı.'),
+    (10, '2021-Q1', 4, 'Yeni tedarikçi sözleşmelerini müzakere etti.');
+END IF;
+
+IF NOT EXISTS (SELECT 1 FROM Performanslar WHERE DegerlendirmeDonemi = '2021-Q2') THEN
+    INSERT INTO Performanslar (CalisanID, DegerlendirmeDonemi, Skor, Aciklama) VALUES
+    (1, '2021-Q2', 5, 'Mikroservis migarasyonunu liderlik ederek tamamladı.'),
+    (2, '2021-Q2', 4, 'Kod inceleme süreçlerini standartlaştırdı.'),
+    (3, '2021-Q2', 3, 'Oryantasyon programını güncelledi.'),
+    (4, '2021-Q2', 5, 'Çeyrek vergi raporlamasını sıfır hatayla tamamladı.'),
+    (5, '2021-Q2', 3, 'Pazar araştırması raporunu hazırladı.'),
+    (6, '2021-Q2', 4, 'Sunucu kapasite optimizasyonu yaptı.'),
+    (7, '2021-Q2', 4, 'Güvenlik politikası güncellemesini duyurdu.'),
+    (8, '2021-Q2', 5, 'Uluslararası patent iş birliğini kurdu.'),
+    (9, '2021-Q2', 2, 'Çözüm süre hedefi iki defa tutturulamadı.'),
+    (10, '2021-Q2', 3, 'Rutin hukuki danışmanlık görevlerini sürdürdü.');
+END IF;
+
+IF NOT EXISTS (SELECT 1 FROM Performanslar WHERE DegerlendirmeDonemi = '2021-Q3') THEN
+    INSERT INTO Performanslar (CalisanID, DegerlendirmeDonemi, Skor, Aciklama) VALUES
+    (1, '2021-Q3', 4, 'Sprint hedeflerini planın üzerinde kapattı.'),
+    (2, '2021-Q3', 4, 'Birim testi kapsamını artırdı.'),
+    (3, '2021-Q3', 3, 'Personel devir süreçlerini yürüttü.'),
+    (4, '2021-Q3', 4, 'Maliyet analiz raporunu yönetim kuruluna sundu.'),
+    (5, '2021-Q3', 4, 'Yeni ürün lansmanı kampanyasını başarıyla yönetti.'),
+    (6, '2021-Q3', 3, 'Bakım pencerelerini zamanında tamamladı.'),
+    (7, '2021-Q3', 4, 'SOC2 denetimi hazırlıklarını tamamladı.'),
+    (8, '2021-Q3', 4, 'Prototip geliştirme süresini kısalttı.'),
+    (9, '2021-Q3', 3, 'Müşteri portalı iyileştirmesi önerisini sundu.'),
+    (10, '2021-Q3', 4, 'Yüksek değerli anlaşmazlığı mahkeme dışına taşıdı.');
+END IF;
+
+IF NOT EXISTS (SELECT 1 FROM Performanslar WHERE DegerlendirmeDonemi = '2021-Q4') THEN
+    INSERT INTO Performanslar (CalisanID, DegerlendirmeDonemi, Skor, Aciklama) VALUES
+    (1, '2021-Q4', 5, 'Yılın en kritik projesini zamanından önce bitirdi.'),
+    (2, '2021-Q4', 3, 'Yıl sonu sprintini tamamladı.'),
+    (3, '2021-Q4', 4, 'Yıl sonu işe alım hedeflerini aştı.'),
+    (4, '2021-Q4', 4, 'Yıl sonu kapanış hesaplarını eksiksiz teslim etti.'),
+    (5, '2021-Q4', 3, 'Yıllık pazarlama stratejisini sundu.'),
+    (6, '2021-Q4', 5, 'Felaket kurtarma tatbikatını sıfır kesintiyle tamamladı.'),
+    (7, '2021-Q4', 5, 'ISO 27001 sertifika sürecini başarıyla kapattı.'),
+    (8, '2021-Q4', 5, 'Yılın en değerli Ar-Ge çıktısını teslim etti.'),
+    (9, '2021-Q4', 3, 'Yıl sonu müşteri memnuniyeti hedefini yakaladı.'),
+    (10, '2021-Q4', 4, 'Kritik sözleşme yenilemelerini tamamladı.');
+END IF;
+
+IF NOT EXISTS (SELECT 1 FROM Performanslar WHERE DegerlendirmeDonemi = '2022-Q1') THEN
+    INSERT INTO Performanslar (CalisanID, DegerlendirmeDonemi, Skor, Aciklama) VALUES
+    (1, '2022-Q1', 4, 'Yeni teknoloji yığınına geçiş planını hazırladı.'),
+    (2, '2022-Q1', 5, 'Performans darboğazını saptayıp çözdü.'),
+    (3, '2022-Q1', 3, 'Çeyrek işe alım hedefini karşıladı.'),
+    (4, '2022-Q1', 4, 'Vergi dönemi süreçlerini hatasız yürüttü.'),
+    (5, '2022-Q1', 3, 'Dijital reklam bütçesi kullanımını optimize etti.'),
+    (6, '2022-Q1', 4, 'Bulut geçiş projesine teknik liderlik yaptı.'),
+    (7, '2022-Q1', 4, 'Sızma testi raporunu yönetime iletti.'),
+    (8, '2022-Q1', 4, 'İki yeni ürün konsepti geliştirdi.'),
+    (9, '2022-Q1', 4, 'Müşteri geri bildirim döngüsünü hızlandırdı.'),
+    (10, '2022-Q1', 3, 'Günlük hukuki süreçleri yürüttü.');
+END IF;
+
+IF NOT EXISTS (SELECT 1 FROM Performanslar WHERE DegerlendirmeDonemi = '2022-Q2') THEN
+    INSERT INTO Performanslar (CalisanID, DegerlendirmeDonemi, Skor, Aciklama) VALUES
+    (1, '2022-Q2', 5, 'CI/CD boru hattı otomasyonunu tamamladı.'),
+    (2, '2022-Q2', 4, 'Ortak kütüphane geliştirmesine katkı sağladı.'),
+    (3, '2022-Q2', 4, 'Yetenek havuzu programını başlattı.'),
+    (4, '2022-Q2', 5, 'Çeyrek mali kapanışı iki gün erken teslim etti.'),
+    (5, '2022-Q2', 4, 'Sosyal medya büyüme hedefini yüzde yirmide aştı.'),
+    (6, '2022-Q2', 5, 'Bulut geçişinin ilk aşamasını sorunsuz tamamladı.'),
+    (7, '2022-Q2', 4, 'Zero-day açığına hızlı müdahale etti.'),
+    (8, '2022-Q2', 5, 'Sektör konferansında Ar-Ge sonuçlarını sundu.'),
+    (9, '2022-Q2', 3, 'Müşteri şikayet oranını düşürdü.'),
+    (10, '2022-Q2', 4, 'Şirket birleşme sürecinde hukuki destek sağladı.');
+END IF;
+
+IF NOT EXISTS (SELECT 1 FROM Performanslar WHERE DegerlendirmeDonemi = '2022-Q3') THEN
+    INSERT INTO Performanslar (CalisanID, DegerlendirmeDonemi, Skor, Aciklama) VALUES
+    (1, '2022-Q3', 4, 'Yazılım kalitesi metriklerini iyileştirdi.'),
+    (2, '2022-Q3', 3, 'Planlanan sprint hedeflerine ulaştı.'),
+    (3, '2022-Q3', 3, 'Oryantasyon sürecini yeniden yapılandırdı.'),
+    (4, '2022-Q3', 4, 'Denetim öncesi hazırlıkları eksiksiz bitirdi.'),
+    (5, '2022-Q3', 3, 'Marka bilinirlik çalışmalarını sürdürdü.'),
+    (6, '2022-Q3', 4, 'İzleme sistemine yeni uyarı katmanı ekledi.'),
+    (7, '2022-Q3', 5, 'Ağ segmentasyonu projesini zamanında bitirdi.'),
+    (8, '2022-Q3', 4, 'Ar-Ge iş birliği anlaşmasını imzaladı.'),
+    (9, '2022-Q3', 3, 'Müşteri self-servis portalı geliştirmesine destek verdi.'),
+    (10, '2022-Q3', 4, 'Uyumluluk denetimini başarıyla geçirdi.');
+END IF;
+
+IF NOT EXISTS (SELECT 1 FROM Performanslar WHERE DegerlendirmeDonemi = '2022-Q4') THEN
+    INSERT INTO Performanslar (CalisanID, DegerlendirmeDonemi, Skor, Aciklama) VALUES
+    (1, '2022-Q4', 5, 'Yılın en büyük teslimatını zamanından önce kapattı.'),
+    (2, '2022-Q4', 4, 'Yıl sonu kod temizliği çalışmasını tamamladı.'),
+    (3, '2022-Q4', 4, 'Yıl sonu değerlendirme sürecini koordine etti.'),
+    (4, '2022-Q4', 5, 'Yıl sonu finansal denetimi sıfır bulguyla geçti.'),
+    (5, '2022-Q4', 3, 'Yıllık pazarlama raporunu yönetime sundu.'),
+    (6, '2022-Q4', 4, 'Yıl sonu altyapı sağlık kontrollerini tamamladı.'),
+    (7, '2022-Q4', 4, 'Yıl sonu güvenlik denetimini başarıyla geçti.'),
+    (8, '2022-Q4', 5, 'Yıl içindeki en etkili Ar-Ge çıktısını hazırladı.'),
+    (9, '2022-Q4', 4, 'Yıl sonu müşteri memnuniyeti anketini yönetti.'),
+    (10, '2022-Q4', 3, 'Rutin hukuki görevlerini eksiksiz tamamladı.');
+END IF;
+
+IF NOT EXISTS (SELECT 1 FROM Performanslar WHERE DegerlendirmeDonemi = '2023-Q1') THEN
+    INSERT INTO Performanslar (CalisanID, DegerlendirmeDonemi, Skor, Aciklama) VALUES
+    (1, '2023-Q1', 4, 'Yeni API standartlarını hayata geçirdi.'),
+    (2, '2023-Q1', 3, 'Geliştirme planına uygun ilerledi.'),
+    (3, '2023-Q1', 5, 'İşveren marka projesini başarıyla başlattı.'),
+    (4, '2023-Q1', 4, 'Çeyrek raporlamayı zamanında teslim etti.'),
+    (5, '2023-Q1', 4, 'Lansman kampanyasının kanallarını optimize etti.'),
+    (6, '2023-Q1', 4, 'Bulut maliyetlerini yüzde on beş azalttı.'),
+    (7, '2023-Q1', 5, 'Tedarik zinciri siber riskini raporladı.'),
+    (8, '2023-Q1', 4, 'Yeni malzeme araştırmasına liderlik etti.'),
+    (9, '2023-Q1', 3, 'Müşteri çözüm süresi hedefini karşıladı.'),
+    (10, '2023-Q1', 4, 'Regülasyon değişikliklerine hızlı uyum sağladı.');
+END IF;
+
+IF NOT EXISTS (SELECT 1 FROM Performanslar WHERE DegerlendirmeDonemi = '2023-Q2') THEN
+    INSERT INTO Performanslar (CalisanID, DegerlendirmeDonemi, Skor, Aciklama) VALUES
+    (1, '2023-Q2', 5, 'Kritik üretim hatasını iki saat içinde çözdü.'),
+    (2, '2023-Q2', 4, 'Modül yeniden yapılanmasını tamamladı.'),
+    (3, '2023-Q2', 4, 'Eğitim programı içeriklerini güncelledi.'),
+    (4, '2023-Q2', 4, 'Çeyrek vergi yükümlülüklerini zamanında iletti.'),
+    (5, '2023-Q2', 5, 'Dijital reklam dönüşüm oranını iki katına çıkardı.'),
+    (6, '2023-Q2', 4, 'Ağ altyapısı yükseltmesini planladı.'),
+    (7, '2023-Q2', 4, 'Çalışan güvenlik farkındalık eğitimini verdi.'),
+    (8, '2023-Q2', 5, 'Uluslararası Ar-Ge hibesi başvurusunu kazandı.'),
+    (9, '2023-Q2', 4, 'Müşteri kayıp oranını düşürdü.'),
+    (10, '2023-Q2', 3, 'Çalışma hukuku danışmanlığını sürdürdü.');
+END IF;
+
+IF NOT EXISTS (SELECT 1 FROM Performanslar WHERE DegerlendirmeDonemi = '2023-Q3') THEN
+    INSERT INTO Performanslar (CalisanID, DegerlendirmeDonemi, Skor, Aciklama) VALUES
+    (1, '2023-Q3', 4, 'Yeni veri katmanı mimarisini tasarladı.'),
+    (2, '2023-Q3', 5, 'Sistem performansını yüzde kırkı iyileştirdi.'),
+    (3, '2023-Q3', 3, 'Standart işe alım döngüsünü sürdürdü.'),
+    (4, '2023-Q3', 4, 'Maliyet-fayda analizini sundu.'),
+    (5, '2023-Q3', 4, 'İçerik pazarlama stratejisini güncelledi.'),
+    (6, '2023-Q3', 5, 'Altyapı yedeklilik planını hayata geçirdi.'),
+    (7, '2023-Q3', 4, 'Güvenlik olay müdahale el kitabını revize etti.'),
+    (8, '2023-Q3', 4, 'Prototipten ürüne geçiş planını hazırladı.'),
+    (9, '2023-Q3', 3, 'Müşteri anket sonuçlarını raporladı.'),
+    (10, '2023-Q3', 4, 'Düzenleyici kurum yazışmalarını yönetti.');
+END IF;
+
+IF NOT EXISTS (SELECT 1 FROM Performanslar WHERE DegerlendirmeDonemi = '2023-Q4') THEN
+    INSERT INTO Performanslar (CalisanID, DegerlendirmeDonemi, Skor, Aciklama) VALUES
+    (1, '2023-Q4', 5, 'Yıllık teknik borç çalışmasını tamamladı.'),
+    (2, '2023-Q4', 4, 'Yıl sonu teslimatlarını zamanında kapattı.'),
+    (3, '2023-Q4', 4, 'Yıl sonu işe alım hedefini tutturdu.'),
+    (4, '2023-Q4', 5, 'Yıl sonu denetim raporunu önceki yıldan daha erken teslim etti.'),
+    (5, '2023-Q4', 3, 'Yıl sonu kampanya etkinliğini ölçümledi.'),
+    (6, '2023-Q4', 5, 'Yıl sonu altyapı planlamasını onaylatıp bütçe aldı.'),
+    (7, '2023-Q4', 5, 'SOC2 Tip II sertifikasını başarıyla tamamladı.'),
+    (8, '2023-Q4', 4, 'Yeni ürün geliştirme sürecine üç buluş dahil etti.'),
+    (9, '2023-Q4', 3, 'Müşteri yenileme oranını korudu.'),
+    (10, '2023-Q4', 4, 'Yıl sonu sözleşme portföyünü güncelledi.');
+END IF;
+
+IF NOT EXISTS (SELECT 1 FROM Performanslar WHERE DegerlendirmeDonemi = '2024-Q1') THEN
+    INSERT INTO Performanslar (CalisanID, DegerlendirmeDonemi, Skor, Aciklama) VALUES
+    (1, '2024-Q1', 5, 'Yapay zeka modülü entegrasyonunu başlattı.'),
+    (2, '2024-Q1', 4, 'Test otomasyonu kapsamını artırdı.'),
+    (3, '2024-Q1', 4, 'Yetkinlik bazlı mülakat sistemine geçti.'),
+    (4, '2024-Q1', 4, 'Yeni muhasebe yazılımına geçişi yönetti.'),
+    (5, '2024-Q1', 3, 'Marka kampanyasını başlattı.'),
+    (6, '2024-Q1', 5, 'Altyapı otomasyonu projesini hayata geçirdi.'),
+    (7, '2024-Q1', 4, 'Tehdit istihbarat programını kurdu.'),
+    (8, '2024-Q1', 5, 'Ar-Ge departmanı için yeni çalışma yöntemi belirledi.'),
+    (9, '2024-Q1', 4, 'Müşteri başarı metriklerini yeniledi.'),
+    (10, '2024-Q1', 3, 'Rutin hukuki görevleri yerine getirdi.');
+END IF;
+
+IF NOT EXISTS (SELECT 1 FROM Performanslar WHERE DegerlendirmeDonemi = '2024-Q2') THEN
+    INSERT INTO Performanslar (CalisanID, DegerlendirmeDonemi, Skor, Aciklama) VALUES
+    (1, '2024-Q2', 4, 'Geliştirme verimliliğini ölçümledi ve artırdı.'),
+    (2, '2024-Q2', 5, 'Eski sistemden modern mimariye göçü tamamladı.'),
+    (3, '2024-Q2', 3, 'Ortalama işe alım süresini kısalttı.'),
+    (4, '2024-Q2', 5, 'Çeyrek mali kapanışı sıfır düzeltmeyle geçirdi.'),
+    (5, '2024-Q2', 4, 'Influencer iş birliği programını başlattı.'),
+    (6, '2024-Q2', 4, 'Veri merkezi enerji verimliliğini artırdı.'),
+    (7, '2024-Q2', 5, 'APT grubu saldırısını tespit edip engelledi.'),
+    (8, '2024-Q2', 4, 'Uluslararası Ar-Ge ortaklığını genişletti.'),
+    (9, '2024-Q2', 4, 'Müşteri kayıp oranını yüzde on sekiz azalttı.'),
+    (10, '2024-Q2', 4, 'Çalışma sözleşmelerini mevzuata uygun güncelledi.');
+END IF;
+
+IF NOT EXISTS (SELECT 1 FROM Performanslar WHERE DegerlendirmeDonemi = '2024-Q3') THEN
+    INSERT INTO Performanslar (CalisanID, DegerlendirmeDonemi, Skor, Aciklama) VALUES
+    (1, '2024-Q3', 4, 'Yük dengeleme optimizasyonu yaptı.'),
+    (2, '2024-Q3', 4, 'Tasarım örüntüleri rehberi hazırladı.'),
+    (3, '2024-Q3', 4, 'Şirket kültür değerlendirmesi yürüttü.'),
+    (4, '2024-Q3', 4, 'Maliyet tahmin modelini güncelledi.'),
+    (5, '2024-Q3', 5, 'Ürün lansmanı kampanyasında satış hedefini yüzde otuz aştı.'),
+    (6, '2024-Q3', 4, 'Ağ güvenliği segmentasyonunu genişletti.'),
+    (7, '2024-Q3', 4, 'Olay müdahale tatbikatını yönetti.'),
+    (8, '2024-Q3', 5, 'Patent portföyünü on yeni başvuruyla büyüttü.'),
+    (9, '2024-Q3', 3, 'Müşteri anket puanını tutturdu.'),
+    (10, '2024-Q3', 4, 'Kurumsal düzenleyici raporlamayı tamamladı.');
+END IF;
+
+IF NOT EXISTS (SELECT 1 FROM Performanslar WHERE DegerlendirmeDonemi = '2024-Q4') THEN
+    INSERT INTO Performanslar (CalisanID, DegerlendirmeDonemi, Skor, Aciklama) VALUES
+    (1, '2024-Q4', 5, 'Yılın en büyük teknik dönüşümünü liderlik etti.'),
+    (2, '2024-Q4', 4, 'Yıl sonu teknik borç azaltma hedefini aştı.'),
+    (3, '2024-Q4', 5, 'Yıl sonu en iyi işveren sertifikası almayı sağladı.'),
+    (4, '2024-Q4', 4, 'Yıl sonu denetimini önceki yıla göre iki gün erken kapattı.'),
+    (5, '2024-Q4', 4, 'Yıl sonu pazarlama ROI raporunu sundu.'),
+    (6, '2024-Q4', 5, 'Yıl sonu altyapı sağlık puanını en yüksek seviyeye taşıdı.'),
+    (7, '2024-Q4', 5, 'Yıl sonu güvenlik olayı sıfır kritik kayıpla tamamlandı.'),
+    (8, '2024-Q4', 5, 'Ar-Ge dönem raporunu yönetime sunarak yatırım onayı aldı.'),
+    (9, '2024-Q4', 4, 'Yıl sonu müşteri yenileme oranını artırdı.'),
+    (10, '2024-Q4', 4, 'Yıl sonu hukuki risk değerlendirmesini tamamladı.');
+END IF;
+
+IF NOT EXISTS (SELECT 1 FROM Performanslar WHERE DegerlendirmeDonemi = '2025-Q1') THEN
+    INSERT INTO Performanslar (CalisanID, DegerlendirmeDonemi, Skor, Aciklama) VALUES
+    (1, '2025-Q1', 5, 'Yeni nesil mimarinin temellerini attı.'),
+    (2, '2025-Q1', 4, 'Otomatik test kapsamını yüzde doksana çıkardı.'),
+    (3, '2025-Q1', 4, 'Yeni aday deneyimi programını başlattı.'),
+    (4, '2025-Q1', 5, 'İlk çeyrek finansal hedeflerin tamamını tutturdu.'),
+    (5, '2025-Q1', 4, 'Pazarlama bütçesi kullanım verimliliğini artırdı.'),
+    (6, '2025-Q1', 5, 'Bulut altyapı maliyetlerini yüzde yirmi kıstı.'),
+    (7, '2025-Q1', 4, 'Yeni güvenlik çerçevesini departmana tanıttı.'),
+    (8, '2025-Q1', 5, 'Ar-Ge yıl planını onaylatıp kaynak tahsisi aldı.'),
+    (9, '2025-Q1', 3, 'Müşteri başarı süreçlerini standartlaştırdı.'),
+    (10, '2025-Q1', 4, 'Yeni mevzuat gerekliliklerini şirkete iletti.');
+END IF;
+
+IF NOT EXISTS (SELECT 1 FROM Performanslar WHERE DegerlendirmeDonemi = '2025-Q2') THEN
+    INSERT INTO Performanslar (CalisanID, DegerlendirmeDonemi, Skor, Aciklama) VALUES
+    (1, '2025-Q2', 4, 'Özerk deploy süreçlerini hayata geçirdi.'),
+    (2, '2025-Q2', 5, 'Kritik güvenlik açığını proaktif olarak yamadı.'),
+    (3, '2025-Q2', 3, 'Ortalama işe alım sürecini sürdürdü.'),
+    (4, '2025-Q2', 4, 'Ara dönem denetimini hatasız tamamladı.'),
+    (5, '2025-Q2', 5, 'Çeyreğin en yüksek reklam dönüşüm oranını elde etti.'),
+    (6, '2025-Q2', 4, 'Altyapı izleme dashboardını yeniledi.'),
+    (7, '2025-Q2', 5, 'Fidye yazılımı simülasyon tatbikatını başarıyla geçirdi.'),
+    (8, '2025-Q2', 4, 'Ar-Ge iş birliği raporunu yayımladı.'),
+    (9, '2025-Q2', 4, 'Müşteri yenileme oranını çeyrek bazında artırdı.'),
+    (10, '2025-Q2', 3, 'Standart hukuki danışmanlık hizmetini sürdürdü.');
+END IF;
+
+IF NOT EXISTS (SELECT 1 FROM Performanslar WHERE DegerlendirmeDonemi = '2025-Q3') THEN
+    INSERT INTO Performanslar (CalisanID, DegerlendirmeDonemi, Skor, Aciklama) VALUES
+    (1, '2025-Q3', 5, 'Platform modernizasyonunu zamanından önce tamamladı.'),
+    (2, '2025-Q3', 4, 'Ortak geliştirme standartlarını yayımladı.'),
+    (3, '2025-Q3', 4, 'Yönetici geliştirme programını başlattı.'),
+    (4, '2025-Q3', 4, 'Çeyrek maliyet tahminini sıfır sapmayla kapattı.'),
+    (5, '2025-Q3', 4, 'Yaz kampanyasında marka bilinirliğini artırdı.'),
+    (6, '2025-Q3', 5, 'Altyapı yükseltme projesini bütçe dahilinde bitirdi.'),
+    (7, '2025-Q3', 4, 'Tedarikçi güvenlik değerlendirmesini tamamladı.'),
+    (8, '2025-Q3', 5, 'Yeni ürün prototipi yatırımcılara sunuldu.'),
+    (9, '2025-Q3', 3, 'Müşteri destek kanallarını konsolide etti.'),
+    (10, '2025-Q3', 4, 'Çeyrek uyumluluk raporunu teslim etti.');
+END IF;
+
+IF NOT EXISTS (SELECT 1 FROM MaasGecmisi WHERE MaasDonemi = '2020-01') THEN
+    INSERT INTO MaasGecmisi (CalisanID, MaasDonemi, NetMaas, Bonus, Kesinti, Aciklama) VALUES
+    (1,  '2020-01', 28000.00, 0.00, 0.00, 'Ocak Maaşı'),
+    (2,  '2020-01', 26000.00, 0.00, 0.00, 'Ocak Maaşı'),
+    (3,  '2020-01', 21000.00, 0.00, 0.00, 'Ocak Maaşı'),
+    (4,  '2020-01', 23000.00, 0.00, 0.00, 'Ocak Maaşı'),
+    (5,  '2020-01', 20000.00, 0.00, 0.00, 'Ocak Maaşı'),
+    (6,  '2020-01', 26500.00, 0.00, 0.00, 'Ocak Maaşı'),
+    (7,  '2020-01', 28500.00, 0.00, 0.00, 'Ocak Maaşı'),
+    (8,  '2020-01', 30000.00, 0.00, 0.00, 'Ocak Maaşı'),
+    (9,  '2020-01', 22000.00, 0.00, 0.00, 'Ocak Maaşı'),
+    (10, '2020-01', 23500.00, 0.00, 0.00, 'Ocak Maaşı');
+END IF;
+
+IF NOT EXISTS (SELECT 1 FROM MaasGecmisi WHERE MaasDonemi = '2020-02') THEN
+    INSERT INTO MaasGecmisi (CalisanID, MaasDonemi, NetMaas, Bonus, Kesinti, Aciklama) VALUES
+    (1,  '2020-02', 28000.00, 0.00, 0.00, 'Şubat Maaşı'),
+    (2,  '2020-02', 26000.00, 0.00, 0.00, 'Şubat Maaşı'),
+    (3,  '2020-02', 21000.00, 0.00, 0.00, 'Şubat Maaşı'),
+    (4,  '2020-02', 23000.00, 0.00, 0.00, 'Şubat Maaşı'),
+    (5,  '2020-02', 20000.00, 0.00, 0.00, 'Şubat Maaşı'),
+    (6,  '2020-02', 26500.00, 0.00, 0.00, 'Şubat Maaşı'),
+    (7,  '2020-02', 28500.00, 0.00, 0.00, 'Şubat Maaşı'),
+    (8,  '2020-02', 30000.00, 0.00, 0.00, 'Şubat Maaşı'),
+    (9,  '2020-02', 22000.00, 0.00, 0.00, 'Şubat Maaşı'),
+    (10, '2020-02', 23500.00, 0.00, 0.00, 'Şubat Maaşı');
+END IF;
+
+IF NOT EXISTS (SELECT 1 FROM MaasGecmisi WHERE MaasDonemi = '2020-03') THEN
+    INSERT INTO MaasGecmisi (CalisanID, MaasDonemi, NetMaas, Bonus, Kesinti, Aciklama) VALUES
+    (1,  '2020-03', 28000.00, 0.00, 0.00, 'Mart Maaşı'),
+    (2,  '2020-03', 26000.00, 0.00, 0.00, 'Mart Maaşı'),
+    (3,  '2020-03', 21000.00, 0.00, 0.00, 'Mart Maaşı'),
+    (4,  '2020-03', 23000.00, 0.00, 0.00, 'Mart Maaşı'),
+    (5,  '2020-03', 20000.00, 0.00, 500.00, 'Mart Maaşı - Devamsızlık Kesintisi'),
+    (6,  '2020-03', 26500.00, 0.00, 0.00, 'Mart Maaşı'),
+    (7,  '2020-03', 28500.00, 0.00, 0.00, 'Mart Maaşı'),
+    (8,  '2020-03', 30000.00, 0.00, 0.00, 'Mart Maaşı'),
+    (9,  '2020-03', 22000.00, 0.00, 0.00, 'Mart Maaşı'),
+    (10, '2020-03', 23500.00, 0.00, 0.00, 'Mart Maaşı');
+END IF;
+
+IF NOT EXISTS (SELECT 1 FROM MaasGecmisi WHERE MaasDonemi = '2020-04') THEN
+    INSERT INTO MaasGecmisi (CalisanID, MaasDonemi, NetMaas, Bonus, Kesinti, Aciklama) VALUES
+    (1,  '2020-04', 28000.00, 2000.00, 0.00, 'Nisan Maaşı + Prim'),
+    (2,  '2020-04', 26000.00, 0.00, 0.00, 'Nisan Maaşı'),
+    (3,  '2020-04', 21000.00, 0.00, 0.00, 'Nisan Maaşı'),
+    (4,  '2020-04', 23000.00, 1500.00, 0.00, 'Nisan Maaşı + Prim'),
+    (5,  '2020-04', 20000.00, 0.00, 0.00, 'Nisan Maaşı'),
+    (6,  '2020-04', 26500.00, 2500.00, 0.00, 'Nisan Maaşı + Ek Mesai'),
+    (7,  '2020-04', 28500.00, 0.00, 0.00, 'Nisan Maaşı'),
+    (8,  '2020-04', 30000.00, 2000.00, 0.00, 'Nisan Maaşı + Ar-Ge Primi'),
+    (9,  '2020-04', 22000.00, 0.00, 0.00, 'Nisan Maaşı'),
+    (10, '2020-04', 23500.00, 0.00, 0.00, 'Nisan Maaşı');
+END IF;
+
+IF NOT EXISTS (SELECT 1 FROM MaasGecmisi WHERE MaasDonemi = '2020-05') THEN
+    INSERT INTO MaasGecmisi (CalisanID, MaasDonemi, NetMaas, Bonus, Kesinti, Aciklama) VALUES
+    (1,  '2020-05', 28000.00, 0.00, 0.00, 'Mayıs Maaşı'),
+    (2,  '2020-05', 26000.00, 0.00, 0.00, 'Mayıs Maaşı'),
+    (3,  '2020-05', 21000.00, 0.00, 0.00, 'Mayıs Maaşı'),
+    (4,  '2020-05', 23000.00, 0.00, 0.00, 'Mayıs Maaşı'),
+    (5,  '2020-05', 20000.00, 0.00, 0.00, 'Mayıs Maaşı'),
+    (6,  '2020-05', 26500.00, 0.00, 0.00, 'Mayıs Maaşı'),
+    (7,  '2020-05', 28500.00, 3000.00, 0.00, 'Mayıs Maaşı + Başarı Primi'),
+    (8,  '2020-05', 30000.00, 0.00, 0.00, 'Mayıs Maaşı'),
+    (9,  '2020-05', 22000.00, 0.00, 0.00, 'Mayıs Maaşı'),
+    (10, '2020-05', 23500.00, 0.00, 0.00, 'Mayıs Maaşı');
+END IF;
+
+IF NOT EXISTS (SELECT 1 FROM MaasGecmisi WHERE MaasDonemi = '2020-06') THEN
+    INSERT INTO MaasGecmisi (CalisanID, MaasDonemi, NetMaas, Bonus, Kesinti, Aciklama) VALUES
+    (1,  '2020-06', 28000.00, 0.00, 0.00, 'Haziran Maaşı'),
+    (2,  '2020-06', 26000.00, 0.00, 0.00, 'Haziran Maaşı'),
+    (3,  '2020-06', 21000.00, 0.00, 0.00, 'Haziran Maaşı'),
+    (4,  '2020-06', 23000.00, 0.00, 0.00, 'Haziran Maaşı'),
+    (5,  '2020-06', 20000.00, 0.00, 0.00, 'Haziran Maaşı'),
+    (6,  '2020-06', 26500.00, 0.00, 0.00, 'Haziran Maaşı'),
+    (7,  '2020-06', 28500.00, 0.00, 0.00, 'Haziran Maaşı'),
+    (8,  '2020-06', 30000.00, 0.00, 0.00, 'Haziran Maaşı'),
+    (9,  '2020-06', 22000.00, 0.00, 1000.00, 'Haziran Maaşı - Devamsızlık'),
+    (10, '2020-06', 23500.00, 0.00, 0.00, 'Haziran Maaşı');
+END IF;
+
+IF NOT EXISTS (SELECT 1 FROM MaasGecmisi WHERE MaasDonemi = '2020-07') THEN
+    INSERT INTO MaasGecmisi (CalisanID, MaasDonemi, NetMaas, Bonus, Kesinti, Aciklama) VALUES
+    (1,  '2020-07', 28000.00, 0.00, 0.00, 'Temmuz Maaşı'),
+    (2,  '2020-07', 26000.00, 0.00, 0.00, 'Temmuz Maaşı'),
+    (3,  '2020-07', 21000.00, 0.00, 0.00, 'Temmuz Maaşı'),
+    (4,  '2020-07', 23000.00, 0.00, 0.00, 'Temmuz Maaşı'),
+    (5,  '2020-07', 20000.00, 0.00, 0.00, 'Temmuz Maaşı'),
+    (6,  '2020-07', 26500.00, 0.00, 0.00, 'Temmuz Maaşı'),
+    (7,  '2020-07', 28500.00, 0.00, 0.00, 'Temmuz Maaşı'),
+    (8,  '2020-07', 30000.00, 0.00, 0.00, 'Temmuz Maaşı'),
+    (9,  '2020-07', 22000.00, 0.00, 0.00, 'Temmuz Maaşı'),
+    (10, '2020-07', 23500.00, 0.00, 0.00, 'Temmuz Maaşı');
+END IF;
+
+IF NOT EXISTS (SELECT 1 FROM MaasGecmisi WHERE MaasDonemi = '2020-08') THEN
+    INSERT INTO MaasGecmisi (CalisanID, MaasDonemi, NetMaas, Bonus, Kesinti, Aciklama) VALUES
+    (1,  '2020-08', 28000.00, 0.00, 0.00, 'Ağustos Maaşı'),
+    (2,  '2020-08', 26000.00, 0.00, 0.00, 'Ağustos Maaşı'),
+    (3,  '2020-08', 21000.00, 0.00, 0.00, 'Ağustos Maaşı'),
+    (4,  '2020-08', 23000.00, 0.00, 0.00, 'Ağustos Maaşı'),
+    (5,  '2020-08', 20000.00, 0.00, 0.00, 'Ağustos Maaşı'),
+    (6,  '2020-08', 26500.00, 1500.00, 0.00, 'Ağustos Maaşı + Ek Mesai'),
+    (7,  '2020-08', 28500.00, 0.00, 0.00, 'Ağustos Maaşı'),
+    (8,  '2020-08', 30000.00, 1500.00, 0.00, 'Ağustos Maaşı + Prim'),
+    (9,  '2020-08', 22000.00, 0.00, 0.00, 'Ağustos Maaşı'),
+    (10, '2020-08', 23500.00, 0.00, 0.00, 'Ağustos Maaşı');
+END IF;
+
+IF NOT EXISTS (SELECT 1 FROM MaasGecmisi WHERE MaasDonemi = '2020-09') THEN
+    INSERT INTO MaasGecmisi (CalisanID, MaasDonemi, NetMaas, Bonus, Kesinti, Aciklama) VALUES
+    (1,  '2020-09', 28000.00, 0.00, 0.00, 'Eylül Maaşı'),
+    (2,  '2020-09', 26000.00, 0.00, 0.00, 'Eylül Maaşı'),
+    (3,  '2020-09', 21000.00, 0.00, 0.00, 'Eylül Maaşı'),
+    (4,  '2020-09', 23000.00, 0.00, 0.00, 'Eylül Maaşı'),
+    (5,  '2020-09', 20000.00, 0.00, 0.00, 'Eylül Maaşı'),
+    (6,  '2020-09', 26500.00, 0.00, 0.00, 'Eylül Maaşı'),
+    (7,  '2020-09', 28500.00, 0.00, 0.00, 'Eylül Maaşı'),
+    (8,  '2020-09', 30000.00, 0.00, 0.00, 'Eylül Maaşı'),
+    (9,  '2020-09', 22000.00, 0.00, 0.00, 'Eylül Maaşı'),
+    (10, '2020-09', 23500.00, 0.00, 0.00, 'Eylül Maaşı');
+END IF;
+
+IF NOT EXISTS (SELECT 1 FROM MaasGecmisi WHERE MaasDonemi = '2020-10') THEN
+    INSERT INTO MaasGecmisi (CalisanID, MaasDonemi, NetMaas, Bonus, Kesinti, Aciklama) VALUES
+    (1,  '2020-10', 28000.00, 0.00, 0.00, 'Ekim Maaşı'),
+    (2,  '2020-10', 26000.00, 0.00, 0.00, 'Ekim Maaşı'),
+    (3,  '2020-10', 21000.00, 0.00, 0.00, 'Ekim Maaşı'),
+    (4,  '2020-10', 23000.00, 0.00, 0.00, 'Ekim Maaşı'),
+    (5,  '2020-10', 20000.00, 0.00, 0.00, 'Ekim Maaşı'),
+    (6,  '2020-10', 26500.00, 0.00, 0.00, 'Ekim Maaşı'),
+    (7,  '2020-10', 28500.00, 0.00, 0.00, 'Ekim Maaşı'),
+    (8,  '2020-10', 30000.00, 0.00, 0.00, 'Ekim Maaşı'),
+    (9,  '2020-10', 22000.00, 0.00, 0.00, 'Ekim Maaşı'),
+    (10, '2020-10', 23500.00, 0.00, 0.00, 'Ekim Maaşı');
+END IF;
+
+IF NOT EXISTS (SELECT 1 FROM MaasGecmisi WHERE MaasDonemi = '2020-11') THEN
+    INSERT INTO MaasGecmisi (CalisanID, MaasDonemi, NetMaas, Bonus, Kesinti, Aciklama) VALUES
+    (1,  '2020-11', 28000.00, 0.00, 0.00, 'Kasım Maaşı'),
+    (2,  '2020-11', 26000.00, 0.00, 0.00, 'Kasım Maaşı'),
+    (3,  '2020-11', 21000.00, 0.00, 0.00, 'Kasım Maaşı'),
+    (4,  '2020-11', 23000.00, 0.00, 0.00, 'Kasım Maaşı'),
+    (5,  '2020-11', 20000.00, 0.00, 1000.00, 'Kasım Maaşı - Devamsızlık'),
+    (6,  '2020-11', 26500.00, 0.00, 0.00, 'Kasım Maaşı'),
+    (7,  '2020-11', 28500.00, 0.00, 0.00, 'Kasım Maaşı'),
+    (8,  '2020-11', 30000.00, 0.00, 0.00, 'Kasım Maaşı'),
+    (9,  '2020-11', 22000.00, 0.00, 0.00, 'Kasım Maaşı'),
+    (10, '2020-11', 23500.00, 0.00, 0.00, 'Kasım Maaşı');
+END IF;
+
+IF NOT EXISTS (SELECT 1 FROM MaasGecmisi WHERE MaasDonemi = '2020-12') THEN
+    INSERT INTO MaasGecmisi (CalisanID, MaasDonemi, NetMaas, Bonus, Kesinti, Aciklama) VALUES
+    (1,  '2020-12', 28000.00, 5000.00, 0.00, 'Aralık Maaşı + Yıl Sonu Primi'),
+    (2,  '2020-12', 26000.00, 3000.00, 0.00, 'Aralık Maaşı + Yıl Sonu Primi'),
+    (3,  '2020-12', 21000.00, 0.00, 0.00, 'Aralık Maaşı'),
+    (4,  '2020-12', 23000.00, 3000.00, 0.00, 'Aralık Maaşı + Yıl Sonu Primi'),
+    (5,  '2020-12', 20000.00, 0.00, 0.00, 'Aralık Maaşı'),
+    (6,  '2020-12', 26500.00, 5000.00, 0.00, 'Aralık Maaşı + Yıl Sonu Primi'),
+    (7,  '2020-12', 28500.00, 3000.00, 0.00, 'Aralık Maaşı + Yıl Sonu Primi'),
+    (8,  '2020-12', 30000.00, 5000.00, 0.00, 'Aralık Maaşı + Yıl Sonu Primi'),
+    (9,  '2020-12', 22000.00, 0.00, 0.00, 'Aralık Maaşı'),
+    (10, '2020-12', 23500.00, 1500.00, 0.00, 'Aralık Maaşı + Prim');
+END IF;
+
+IF NOT EXISTS (SELECT 1 FROM MaasGecmisi WHERE MaasDonemi = '2021-01') THEN
+    INSERT INTO MaasGecmisi (CalisanID, MaasDonemi, NetMaas, Bonus, Kesinti, Aciklama) VALUES
+    (1,  '2021-01', 30800.00, 0.00, 0.00, 'Ocak Maaşı'),
+    (2,  '2021-01', 28600.00, 0.00, 0.00, 'Ocak Maaşı'),
+    (3,  '2021-01', 23100.00, 0.00, 0.00, 'Ocak Maaşı'),
+    (4,  '2021-01', 25300.00, 0.00, 0.00, 'Ocak Maaşı'),
+    (5,  '2021-01', 22000.00, 0.00, 0.00, 'Ocak Maaşı'),
+    (6,  '2021-01', 29150.00, 0.00, 0.00, 'Ocak Maaşı'),
+    (7,  '2021-01', 31350.00, 0.00, 0.00, 'Ocak Maaşı'),
+    (8,  '2021-01', 33000.00, 0.00, 0.00, 'Ocak Maaşı'),
+    (9,  '2021-01', 24200.00, 0.00, 0.00, 'Ocak Maaşı'),
+    (10, '2021-01', 25850.00, 0.00, 0.00, 'Ocak Maaşı');
+END IF;
+
+IF NOT EXISTS (SELECT 1 FROM MaasGecmisi WHERE MaasDonemi = '2021-06') THEN
+    INSERT INTO MaasGecmisi (CalisanID, MaasDonemi, NetMaas, Bonus, Kesinti, Aciklama) VALUES
+    (1,  '2021-06', 30800.00, 0.00, 0.00, 'Haziran Maaşı'),
+    (2,  '2021-06', 28600.00, 0.00, 0.00, 'Haziran Maaşı'),
+    (3,  '2021-06', 23100.00, 0.00, 0.00, 'Haziran Maaşı'),
+    (4,  '2021-06', 25300.00, 2000.00, 0.00, 'Haziran Maaşı + Dönem Primi'),
+    (5,  '2021-06', 22000.00, 0.00, 0.00, 'Haziran Maaşı'),
+    (6,  '2021-06', 29150.00, 0.00, 0.00, 'Haziran Maaşı'),
+    (7,  '2021-06', 31350.00, 3000.00, 0.00, 'Haziran Maaşı + Prim'),
+    (8,  '2021-06', 33000.00, 2500.00, 0.00, 'Haziran Maaşı + Prim'),
+    (9,  '2021-06', 24200.00, 0.00, 800.00, 'Haziran Maaşı - Kesinti'),
+    (10, '2021-06', 25850.00, 0.00, 0.00, 'Haziran Maaşı');
+END IF;
+
+IF NOT EXISTS (SELECT 1 FROM MaasGecmisi WHERE MaasDonemi = '2021-12') THEN
+    INSERT INTO MaasGecmisi (CalisanID, MaasDonemi, NetMaas, Bonus, Kesinti, Aciklama) VALUES
+    (1,  '2021-12', 30800.00, 5000.00, 0.00, 'Aralık Maaşı + Yıl Sonu Primi'),
+    (2,  '2021-12', 28600.00, 0.00, 0.00, 'Aralık Maaşı'),
+    (3,  '2021-12', 23100.00, 3000.00, 0.00, 'Aralık Maaşı + Prim'),
+    (4,  '2021-12', 25300.00, 5000.00, 0.00, 'Aralık Maaşı + Yıl Sonu Primi'),
+    (5,  '2021-12', 22000.00, 0.00, 0.00, 'Aralık Maaşı'),
+    (6,  '2021-12', 29150.00, 5000.00, 0.00, 'Aralık Maaşı + Yıl Sonu Primi'),
+    (7,  '2021-12', 31350.00, 5000.00, 0.00, 'Aralık Maaşı + Yıl Sonu Primi'),
+    (8,  '2021-12', 33000.00, 5000.00, 0.00, 'Aralık Maaşı + Yıl Sonu Primi'),
+    (9,  '2021-12', 24200.00, 0.00, 0.00, 'Aralık Maaşı'),
+    (10, '2021-12', 25850.00, 3000.00, 0.00, 'Aralık Maaşı + Prim');
+END IF;
+
+IF NOT EXISTS (SELECT 1 FROM MaasGecmisi WHERE MaasDonemi = '2022-01') THEN
+    INSERT INTO MaasGecmisi (CalisanID, MaasDonemi, NetMaas, Bonus, Kesinti, Aciklama) VALUES
+    (1,  '2022-01', 36960.00, 0.00, 0.00, 'Ocak Maaşı'),
+    (2,  '2022-01', 34320.00, 0.00, 0.00, 'Ocak Maaşı'),
+    (3,  '2022-01', 27720.00, 0.00, 0.00, 'Ocak Maaşı'),
+    (4,  '2022-01', 30360.00, 0.00, 0.00, 'Ocak Maaşı'),
+    (5,  '2022-01', 26400.00, 0.00, 0.00, 'Ocak Maaşı'),
+    (6,  '2022-01', 34980.00, 0.00, 0.00, 'Ocak Maaşı'),
+    (7,  '2022-01', 37620.00, 0.00, 0.00, 'Ocak Maaşı'),
+    (8,  '2022-01', 39600.00, 0.00, 0.00, 'Ocak Maaşı'),
+    (9,  '2022-01', 29040.00, 0.00, 0.00, 'Ocak Maaşı'),
+    (10, '2022-01', 31020.00, 0.00, 0.00, 'Ocak Maaşı');
+END IF;
+
+IF NOT EXISTS (SELECT 1 FROM MaasGecmisi WHERE MaasDonemi = '2022-06') THEN
+    INSERT INTO MaasGecmisi (CalisanID, MaasDonemi, NetMaas, Bonus, Kesinti, Aciklama) VALUES
+    (1,  '2022-06', 36960.00, 5000.00, 0.00, 'Haziran Maaşı + Performans Primi'),
+    (2,  '2022-06', 34320.00, 3000.00, 0.00, 'Haziran Maaşı + Prim'),
+    (3,  '2022-06', 27720.00, 0.00, 0.00, 'Haziran Maaşı'),
+    (4,  '2022-06', 30360.00, 5000.00, 0.00, 'Haziran Maaşı + Performans Primi'),
+    (5,  '2022-06', 26400.00, 0.00, 1500.00, 'Haziran Maaşı - Kesinti'),
+    (6,  '2022-06', 34980.00, 5000.00, 0.00, 'Haziran Maaşı + Prim'),
+    (7,  '2022-06', 37620.00, 3000.00, 0.00, 'Haziran Maaşı + Prim'),
+    (8,  '2022-06', 39600.00, 5000.00, 0.00, 'Haziran Maaşı + Performans Primi'),
+    (9,  '2022-06', 29040.00, 0.00, 0.00, 'Haziran Maaşı'),
+    (10, '2022-06', 31020.00, 1500.00, 0.00, 'Haziran Maaşı + Prim');
+END IF;
+
+IF NOT EXISTS (SELECT 1 FROM MaasGecmisi WHERE MaasDonemi = '2022-12') THEN
+    INSERT INTO MaasGecmisi (CalisanID, MaasDonemi, NetMaas, Bonus, Kesinti, Aciklama) VALUES
+    (1,  '2022-12', 36960.00, 5000.00, 0.00, 'Aralık Maaşı + Yıl Sonu Primi'),
+    (2,  '2022-12', 34320.00, 3000.00, 0.00, 'Aralık Maaşı + Prim'),
+    (3,  '2022-12', 27720.00, 0.00, 0.00, 'Aralık Maaşı'),
+    (4,  '2022-12', 30360.00, 5000.00, 0.00, 'Aralık Maaşı + Yıl Sonu Primi'),
+    (5,  '2022-12', 26400.00, 0.00, 0.00, 'Aralık Maaşı'),
+    (6,  '2022-12', 34980.00, 5000.00, 0.00, 'Aralık Maaşı + Yıl Sonu Primi'),
+    (7,  '2022-12', 37620.00, 5000.00, 0.00, 'Aralık Maaşı + Yıl Sonu Primi'),
+    (8,  '2022-12', 39600.00, 5000.00, 0.00, 'Aralık Maaşı + Yıl Sonu Primi'),
+    (9,  '2022-12', 29040.00, 0.00, 0.00, 'Aralık Maaşı'),
+    (10, '2022-12', 31020.00, 3000.00, 0.00, 'Aralık Maaşı + Prim');
+END IF;
+
+IF NOT EXISTS (SELECT 1 FROM MaasGecmisi WHERE MaasDonemi = '2023-01') THEN
+    INSERT INTO MaasGecmisi (CalisanID, MaasDonemi, NetMaas, Bonus, Kesinti, Aciklama) VALUES
+    (1,  '2023-01', 46200.00, 0.00, 0.00, 'Ocak Maaşı'),
+    (2,  '2023-01', 42900.00, 0.00, 0.00, 'Ocak Maaşı'),
+    (3,  '2023-01', 34650.00, 0.00, 0.00, 'Ocak Maaşı'),
+    (4,  '2023-01', 37950.00, 0.00, 0.00, 'Ocak Maaşı'),
+    (5,  '2023-01', 33000.00, 0.00, 0.00, 'Ocak Maaşı'),
+    (6,  '2023-01', 43725.00, 0.00, 0.00, 'Ocak Maaşı'),
+    (7,  '2023-01', 47025.00, 0.00, 0.00, 'Ocak Maaşı'),
+    (8,  '2023-01', 49500.00, 0.00, 0.00, 'Ocak Maaşı'),
+    (9,  '2023-01', 36300.00, 0.00, 0.00, 'Ocak Maaşı'),
+    (10, '2023-01', 38775.00, 0.00, 0.00, 'Ocak Maaşı');
+END IF;
+
+IF NOT EXISTS (SELECT 1 FROM MaasGecmisi WHERE MaasDonemi = '2023-06') THEN
+    INSERT INTO MaasGecmisi (CalisanID, MaasDonemi, NetMaas, Bonus, Kesinti, Aciklama) VALUES
+    (1,  '2023-06', 46200.00, 5000.00, 0.00, 'Haziran Maaşı + Prim'),
+    (2,  '2023-06', 42900.00, 3000.00, 0.00, 'Haziran Maaşı + Prim'),
+    (3,  '2023-06', 34650.00, 0.00, 0.00, 'Haziran Maaşı'),
+    (4,  '2023-06', 37950.00, 3000.00, 0.00, 'Haziran Maaşı + Prim'),
+    (5,  '2023-06', 33000.00, 5000.00, 0.00, 'Haziran Maaşı + Kampanya Primi'),
+    (6,  '2023-06', 43725.00, 3000.00, 0.00, 'Haziran Maaşı + Prim'),
+    (7,  '2023-06', 47025.00, 3000.00, 0.00, 'Haziran Maaşı + Prim'),
+    (8,  '2023-06', 49500.00, 5000.00, 0.00, 'Haziran Maaşı + Performans Primi'),
+    (9,  '2023-06', 36300.00, 0.00, 0.00, 'Haziran Maaşı'),
+    (10, '2023-06', 38775.00, 1500.00, 0.00, 'Haziran Maaşı + Prim');
+END IF;
+
+IF NOT EXISTS (SELECT 1 FROM MaasGecmisi WHERE MaasDonemi = '2023-12') THEN
+    INSERT INTO MaasGecmisi (CalisanID, MaasDonemi, NetMaas, Bonus, Kesinti, Aciklama) VALUES
+    (1,  '2023-12', 46200.00, 5000.00, 0.00, 'Aralık Maaşı + Yıl Sonu Primi'),
+    (2,  '2023-12', 42900.00, 3000.00, 0.00, 'Aralık Maaşı + Prim'),
+    (3,  '2023-12', 34650.00, 5000.00, 0.00, 'Aralık Maaşı + Prim'),
+    (4,  '2023-12', 37950.00, 5000.00, 0.00, 'Aralık Maaşı + Yıl Sonu Primi'),
+    (5,  '2023-12', 33000.00, 0.00, 0.00, 'Aralık Maaşı'),
+    (6,  '2023-12', 43725.00, 5000.00, 0.00, 'Aralık Maaşı + Yıl Sonu Primi'),
+    (7,  '2023-12', 47025.00, 5000.00, 0.00, 'Aralık Maaşı + Yıl Sonu Primi'),
+    (8,  '2023-12', 49500.00, 5000.00, 0.00, 'Aralık Maaşı + Yıl Sonu Primi'),
+    (9,  '2023-12', 36300.00, 0.00, 0.00, 'Aralık Maaşı'),
+    (10, '2023-12', 38775.00, 3000.00, 0.00, 'Aralık Maaşı + Prim');
+END IF;
+
+IF NOT EXISTS (SELECT 1 FROM MaasGecmisi WHERE MaasDonemi = '2024-01') THEN
+    INSERT INTO MaasGecmisi (CalisanID, MaasDonemi, NetMaas, Bonus, Kesinti, Aciklama) VALUES
+    (1,  '2024-01', 53130.00, 0.00, 0.00, 'Ocak Maaşı'),
+    (2,  '2024-01', 49335.00, 0.00, 0.00, 'Ocak Maaşı'),
+    (3,  '2024-01', 39848.00, 0.00, 0.00, 'Ocak Maaşı'),
+    (4,  '2024-01', 43643.00, 0.00, 0.00, 'Ocak Maaşı'),
+    (5,  '2024-01', 37950.00, 0.00, 0.00, 'Ocak Maaşı'),
+    (6,  '2024-01', 50284.00, 0.00, 0.00, 'Ocak Maaşı'),
+    (7,  '2024-01', 54079.00, 0.00, 0.00, 'Ocak Maaşı'),
+    (8,  '2024-01', 56925.00, 0.00, 0.00, 'Ocak Maaşı'),
+    (9,  '2024-01', 41745.00, 0.00, 0.00, 'Ocak Maaşı'),
+    (10, '2024-01', 44591.00, 0.00, 0.00, 'Ocak Maaşı');
+END IF;
+
+IF NOT EXISTS (SELECT 1 FROM MaasGecmisi WHERE MaasDonemi = '2024-06') THEN
+    INSERT INTO MaasGecmisi (CalisanID, MaasDonemi, NetMaas, Bonus, Kesinti, Aciklama) VALUES
+    (1,  '2024-06', 53130.00, 5000.00, 0.00, 'Haziran Maaşı + Performans Primi'),
+    (2,  '2024-06', 49335.00, 5000.00, 0.00, 'Haziran Maaşı + Performans Primi'),
+    (3,  '2024-06', 39848.00, 0.00, 0.00, 'Haziran Maaşı'),
+    (4,  '2024-06', 43643.00, 5000.00, 0.00, 'Haziran Maaşı + Prim'),
+    (5,  '2024-06', 37950.00, 3000.00, 0.00, 'Haziran Maaşı + Prim'),
+    (6,  '2024-06', 50284.00, 5000.00, 0.00, 'Haziran Maaşı + Prim'),
+    (7,  '2024-06', 54079.00, 5000.00, 0.00, 'Haziran Maaşı + Prim'),
+    (8,  '2024-06', 56925.00, 5000.00, 0.00, 'Haziran Maaşı + Prim'),
+    (9,  '2024-06', 41745.00, 0.00, 0.00, 'Haziran Maaşı'),
+    (10, '2024-06', 44591.00, 1500.00, 0.00, 'Haziran Maaşı + Prim');
+END IF;
+
+IF NOT EXISTS (SELECT 1 FROM MaasGecmisi WHERE MaasDonemi = '2024-12') THEN
+    INSERT INTO MaasGecmisi (CalisanID, MaasDonemi, NetMaas, Bonus, Kesinti, Aciklama) VALUES
+    (1,  '2024-12', 53130.00, 5000.00, 0.00, 'Aralık Maaşı + Yıl Sonu Primi'),
+    (2,  '2024-12', 49335.00, 3000.00, 0.00, 'Aralık Maaşı + Prim'),
+    (3,  '2024-12', 39848.00, 5000.00, 0.00, 'Aralık Maaşı + Yıl Sonu Primi'),
+    (4,  '2024-12', 43643.00, 3000.00, 0.00, 'Aralık Maaşı + Prim'),
+    (5,  '2024-12', 37950.00, 3000.00, 0.00, 'Aralık Maaşı + Prim'),
+    (6,  '2024-12', 50284.00, 5000.00, 0.00, 'Aralık Maaşı + Yıl Sonu Primi'),
+    (7,  '2024-12', 54079.00, 5000.00, 0.00, 'Aralık Maaşı + Yıl Sonu Primi'),
+    (8,  '2024-12', 56925.00, 5000.00, 0.00, 'Aralık Maaşı + Yıl Sonu Primi'),
+    (9,  '2024-12', 41745.00, 0.00, 0.00, 'Aralık Maaşı'),
+    (10, '2024-12', 44591.00, 3000.00, 0.00, 'Aralık Maaşı + Prim');
+END IF;
+
+IF NOT EXISTS (SELECT 1 FROM MaasGecmisi WHERE MaasDonemi = '2025-01') THEN
+    INSERT INTO MaasGecmisi (CalisanID, MaasDonemi, NetMaas, Bonus, Kesinti, Aciklama) VALUES
+    (1,  '2025-01', 45000.00, 0.00, 0.00, 'Ocak Maaşı'),
+    (2,  '2025-01', 42000.00, 0.00, 0.00, 'Ocak Maaşı'),
+    (3,  '2025-01', 35000.00, 0.00, 0.00, 'Ocak Maaşı'),
+    (4,  '2025-01', 38000.00, 0.00, 0.00, 'Ocak Maaşı'),
+    (5,  '2025-01', 34000.00, 0.00, 0.00, 'Ocak Maaşı'),
+    (6,  '2025-01', 43000.00, 0.00, 0.00, 'Ocak Maaşı'),
+    (7,  '2025-01', 46000.00, 0.00, 0.00, 'Ocak Maaşı'),
+    (8,  '2025-01', 48000.00, 0.00, 0.00, 'Ocak Maaşı'),
+    (9,  '2025-01', 37000.00, 0.00, 0.00, 'Ocak Maaşı'),
+    (10, '2025-01', 39000.00, 0.00, 0.00, 'Ocak Maaşı');
+END IF;
+
+IF NOT EXISTS (SELECT 1 FROM MaasGecmisi WHERE MaasDonemi = '2025-06') THEN
+    INSERT INTO MaasGecmisi (CalisanID, MaasDonemi, NetMaas, Bonus, Kesinti, Aciklama) VALUES
+    (1,  '2025-06', 45000.00, 5000.00, 0.00, 'Haziran Maaşı + Performans Primi'),
+    (2,  '2025-06', 42000.00, 3000.00, 0.00, 'Haziran Maaşı + Prim'),
+    (3,  '2025-06', 35000.00, 0.00, 0.00, 'Haziran Maaşı'),
+    (4,  '2025-06', 38000.00, 5000.00, 0.00, 'Haziran Maaşı + Dönem Primi'),
+    (5,  '2025-06', 34000.00, 0.00, 1500.00, 'Haziran Maaşı - Kesinti'),
+    (6,  '2025-06', 43000.00, 3000.00, 0.00, 'Haziran Maaşı + Prim'),
+    (7,  '2025-06', 46000.00, 5000.00, 0.00, 'Haziran Maaşı + Prim'),
+    (8,  '2025-06', 48000.00, 3000.00, 0.00, 'Haziran Maaşı + Prim'),
+    (9,  '2025-06', 37000.00, 0.00, 0.00, 'Haziran Maaşı'),
+    (10, '2025-06', 39000.00, 1500.00, 0.00, 'Haziran Maaşı + Prim');
+END IF;
+
+IF NOT EXISTS (SELECT 1 FROM MaasGecmisi WHERE MaasDonemi = '2025-12') THEN
+    INSERT INTO MaasGecmisi (CalisanID, MaasDonemi, NetMaas, Bonus, Kesinti, Aciklama) VALUES
+    (1,  '2025-12', 45000.00, 5000.00, 0.00, 'Aralık Maaşı + Yıl Sonu Primi'),
+    (2,  '2025-12', 42000.00, 3000.00, 0.00, 'Aralık Maaşı + Prim'),
+    (3,  '2025-12', 35000.00, 3000.00, 0.00, 'Aralık Maaşı + Prim'),
+    (4,  '2025-12', 38000.00, 5000.00, 0.00, 'Aralık Maaşı + Yıl Sonu Primi'),
+    (5,  '2025-12', 34000.00, 0.00, 0.00, 'Aralık Maaşı'),
+    (6,  '2025-12', 43000.00, 5000.00, 0.00, 'Aralık Maaşı + Yıl Sonu Primi'),
+    (7,  '2025-12', 46000.00, 5000.00, 0.00, 'Aralık Maaşı + Yıl Sonu Primi'),
+    (8,  '2025-12', 48000.00, 5000.00, 0.00, 'Aralık Maaşı + Yıl Sonu Primi'),
+    (9,  '2025-12', 37000.00, 0.00, 0.00, 'Aralık Maaşı'),
+    (10, '2025-12', 39000.00, 3000.00, 0.00, 'Aralık Maaşı + Prim');
+END IF;
+
+IF NOT EXISTS (SELECT 1 FROM Izinler WHERE BaslangicTarihi = '2020-03-02' AND CalisanID = 1) THEN
+    INSERT INTO Izinler (CalisanID, IzinTuru, BaslangicTarihi, BitisTarihi, OnayDurumu) VALUES
+    (1,  'Yıllık İzin',  '2020-03-02', '2020-03-06', 'Onaylandı'),
+    (2,  'Sağlık İzni',  '2020-04-10', '2020-04-12', 'Onaylandı'),
+    (3,  'Yıllık İzin',  '2020-07-13', '2020-07-17', 'Onaylandı'),
+    (4,  'Mazeret İzni', '2020-02-14', '2020-02-15', 'Onaylandı'),
+    (5,  'Yıllık İzin',  '2020-08-03', '2020-08-07', 'Onaylandı'),
+    (6,  'Yıllık İzin',  '2020-09-07', '2020-09-11', 'Onaylandı'),
+    (7,  'Sağlık İzni',  '2020-11-02', '2020-11-04', 'Onaylandı'),
+    (8,  'Yıllık İzin',  '2020-06-15', '2020-06-19', 'Onaylandı'),
+    (9,  'Ücretsiz İzin','2020-05-04', '2020-05-08', 'Onaylandı'),
+    (10, 'Yıllık İzin',  '2020-10-12', '2020-10-16', 'Onaylandı');
+END IF;
+
+IF NOT EXISTS (SELECT 1 FROM Izinler WHERE BaslangicTarihi = '2021-04-05' AND CalisanID = 1) THEN
+    INSERT INTO Izinler (CalisanID, IzinTuru, BaslangicTarihi, BitisTarihi, OnayDurumu) VALUES
+    (1,  'Yıllık İzin',  '2021-04-05', '2021-04-09', 'Onaylandı'),
+    (2,  'Yıllık İzin',  '2021-08-16', '2021-08-20', 'Onaylandı'),
+    (3,  'Mazeret İzni', '2021-03-08', '2021-03-09', 'Onaylandı'),
+    (4,  'Sağlık İzni',  '2021-06-21', '2021-06-23', 'Onaylandı'),
+    (5,  'Yıllık İzin',  '2021-07-19', '2021-07-23', 'Onaylandı'),
+    (6,  'Yıllık İzin',  '2021-09-06', '2021-09-10', 'Onaylandı'),
+    (7,  'Yıllık İzin',  '2021-05-10', '2021-05-14', 'Onaylandı'),
+    (8,  'Sağlık İzni',  '2021-02-22', '2021-02-24', 'Onaylandı'),
+    (9,  'Yıllık İzin',  '2021-10-04', '2021-10-08', 'Onaylandı'),
+    (10, 'Mazeret İzni', '2021-12-06', '2021-12-07', 'Onaylandı');
+END IF;
+
+IF NOT EXISTS (SELECT 1 FROM Izinler WHERE BaslangicTarihi = '2022-05-09' AND CalisanID = 1) THEN
+    INSERT INTO Izinler (CalisanID, IzinTuru, BaslangicTarihi, BitisTarihi, OnayDurumu) VALUES
+    (1,  'Yıllık İzin',  '2022-05-09', '2022-05-13', 'Onaylandı'),
+    (2,  'Sağlık İzni',  '2022-01-17', '2022-01-19', 'Onaylandı'),
+    (3,  'Yıllık İzin',  '2022-08-22', '2022-08-26', 'Onaylandı'),
+    (4,  'Yıllık İzin',  '2022-07-04', '2022-07-08', 'Onaylandı'),
+    (5,  'Mazeret İzni', '2022-09-12', '2022-09-13', 'Onaylandı'),
+    (6,  'Yıllık İzin',  '2022-06-06', '2022-06-10', 'Onaylandı'),
+    (7,  'Sağlık İzni',  '2022-03-14', '2022-03-16', 'Onaylandı'),
+    (8,  'Yıllık İzin',  '2022-10-03', '2022-10-07', 'Onaylandı'),
+    (9,  'Ücretsiz İzin','2022-04-18', '2022-04-22', 'Onaylandı'),
+    (10, 'Yıllık İzin',  '2022-11-14', '2022-11-18', 'Onaylandı');
+END IF;
+
+IF NOT EXISTS (SELECT 1 FROM Izinler WHERE BaslangicTarihi = '2023-06-12' AND CalisanID = 1) THEN
+    INSERT INTO Izinler (CalisanID, IzinTuru, BaslangicTarihi, BitisTarihi, OnayDurumu) VALUES
+    (1,  'Yıllık İzin',  '2023-06-12', '2023-06-16', 'Onaylandı'),
+    (2,  'Yıllık İzin',  '2023-07-10', '2023-07-14', 'Onaylandı'),
+    (3,  'Sağlık İzni',  '2023-02-06', '2023-02-08', 'Onaylandı'),
+    (4,  'Yıllık İzin',  '2023-08-28', '2023-09-01', 'Onaylandı'),
+    (5,  'Yıllık İzin',  '2023-05-22', '2023-05-26', 'Onaylandı'),
+    (6,  'Mazeret İzni', '2023-03-20', '2023-03-21', 'Onaylandı'),
+    (7,  'Yıllık İzin',  '2023-09-11', '2023-09-15', 'Onaylandı'),
+    (8,  'Sağlık İzni',  '2023-04-03', '2023-04-05', 'Onaylandı'),
+    (9,  'Yıllık İzin',  '2023-10-16', '2023-10-20', 'Onaylandı'),
+    (10, 'Yıllık İzin',  '2023-11-06', '2023-11-10', 'Onaylandı');
+END IF;
+
+IF NOT EXISTS (SELECT 1 FROM Izinler WHERE BaslangicTarihi = '2024-04-08' AND CalisanID = 1) THEN
+    INSERT INTO Izinler (CalisanID, IzinTuru, BaslangicTarihi, BitisTarihi, OnayDurumu) VALUES
+    (1,  'Yıllık İzin',  '2024-04-08', '2024-04-12', 'Onaylandı'),
+    (2,  'Yıllık İzin',  '2024-07-22', '2024-07-26', 'Onaylandı'),
+    (3,  'Mazeret İzni', '2024-01-15', '2024-01-16', 'Onaylandı'),
+    (4,  'Sağlık İzni',  '2024-05-06', '2024-05-08', 'Onaylandı'),
+    (5,  'Yıllık İzin',  '2024-08-12', '2024-08-16', 'Onaylandı'),
+    (6,  'Yıllık İzin',  '2024-06-03', '2024-06-07', 'Onaylandı'),
+    (7,  'Yıllık İzin',  '2024-09-16', '2024-09-20', 'Onaylandı'),
+    (8,  'Yıllık İzin',  '2024-03-18', '2024-03-22', 'Onaylandı'),
+    (9,  'Ücretsiz İzin','2024-10-07', '2024-10-11', 'Onaylandı'),
+    (10, 'Yıllık İzin',  '2024-11-11', '2024-11-15', 'Onaylandı');
+END IF;
+
+IF NOT EXISTS (SELECT 1 FROM Izinler WHERE BaslangicTarihi = '2025-03-10' AND CalisanID = 1) THEN
+    INSERT INTO Izinler (CalisanID, IzinTuru, BaslangicTarihi, BitisTarihi, OnayDurumu) VALUES
+    (1,  'Yıllık İzin',  '2025-03-10', '2025-03-14', 'Onaylandı'),
+    (2,  'Sağlık İzni',  '2025-02-17', '2025-02-19', 'Onaylandı'),
+    (3,  'Yıllık İzin',  '2025-06-23', '2025-06-27', 'Onaylandı'),
+    (4,  'Mazeret İzni', '2025-04-07', '2025-04-08', 'Onaylandı'),
+    (5,  'Yıllık İzin',  '2025-07-14', '2025-07-18', 'Onaylandı'),
+    (6,  'Yıllık İzin',  '2025-08-04', '2025-08-08', 'Onaylandı'),
+    (7,  'Sağlık İzni',  '2025-01-20', '2025-01-22', 'Onaylandı'),
+    (8,  'Yıllık İzin',  '2025-09-08', '2025-09-12', 'Onaylandı'),
+    (9,  'Yıllık İzin',  '2025-05-19', '2025-05-23', 'Onaylandı'),
+    (10, 'Yıllık İzin',  '2025-10-13', '2025-10-17', 'Onaylandı');
+END IF;
+
+END $$;
